@@ -1,0 +1,2979 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aprova Policial - Sistema de Gestão de Estudos</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            'inter': ['Inter', 'sans-serif'],
+          },
+          colors: {
+            'navy': {
+              50: '#f0f4f8',
+              100: '#d9e2ec',
+              200: '#bcccdc',
+              300: '#9fb3c8',
+              400: '#829ab1',
+              500: '#627d98',
+              600: '#486581',
+              700: '#334e68',
+              800: '#243b53',
+              900: '#102a43',
+            },
+            'accent': {
+              50: '#e6f6ff',
+              100: '#bae3ff',
+              200: '#7cc4fa',
+              300: '#47a3f3',
+              400: '#2186eb',
+              500: '#0967d2',
+              600: '#0552b5',
+              700: '#03449e',
+              800: '#01337d',
+              900: '#002159',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    .sidebar-link { transition: all 0.2s ease; }
+    .sidebar-link:hover { background: rgba(255,255,255,0.1); }
+    .sidebar-link.active { background: rgba(255,255,255,0.15); border-left: 3px solid #47a3f3; }
+    .card-hover { transition: all 0.2s ease; }
+    .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.1); }
+    .tree-item { transition: all 0.15s ease; }
+    .tree-item:hover { background: #f8fafc; }
+    .progress-ring { transition: stroke-dashoffset 0.5s ease; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="h-full bg-gray-50 font-inter">
+  <div id="app" class="h-full overflow-auto"></div>
+
+  <script>
+    // ===== STATE MANAGEMENT =====
+    const APP_KEY = 'aprovapolicial_data';
+    
+    let state = {
+      currentScreen: 'profiles',
+      currentProfile: null,
+      currentContest: null,
+      currentSyllabusTopicId: null, // for Edital > Tópico details
+      sessionPrefill: { topicId: null, subtopicId: null },
+      profiles: [],
+      // Timer state (duration stored in seconds)
+      timerRunning: false,
+      timerSeconds: 0, // derived elapsed seconds for display
+      timerStartEpoch: null, // Date.now() when current run started
+      timerAccumulatedSeconds: 0, // seconds accumulated from previous runs
+      timerInterval: null
+    };
+
+    // Default config
+    const defaultConfig = {
+      app_title: 'Aprova Policial',
+      welcome_message: 'Bem-vindo ao seu sistema de estudos',
+      primary_color: '#102a43',
+      secondary_color: '#0967d2',
+      background_color: '#f8fafc',
+      text_color: '#1e293b',
+      accent_color: '#47a3f3',
+      font_family: 'Inter',
+      font_size: 16
+    };
+
+    let config = { ...defaultConfig };
+
+    // ===== LOCAL STORAGE =====
+    function saveToStorage() {
+      const data = {
+        profiles: state.profiles,
+        lastBackup: new Date().toISOString()
+      };
+      localStorage.setItem(APP_KEY, JSON.stringify(data));
+    }
+
+    function loadFromStorage() {
+      const data = localStorage.getItem(APP_KEY);
+      if (data) {
+        const parsed = JSON.parse(data);
+        state.profiles = parsed.profiles || [];
+      }
+    }
+
+    // ===== UTILITY FUNCTIONS =====
+    function generateId() {
+      return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    }
+
+    function formatDate(date) {
+      return new Date(date).toLocaleDateString('pt-BR');
+    }
+
+function getCurrentContest() {
+  const profile = state.profiles.find(p => p.id === state.currentProfile);
+  return profile?.contests?.find(c => c.id === state.currentContest) || null;
+}
+
+function getTopicById(contest, topicId) {
+  return contest?.syllabus?.find(t => t.id === topicId) || null;
+}
+
+function getSubtopicById(topic, subtopicId) {
+  return topic?.subtopics?.find(st => st.id === subtopicId) || null;
+}
+
+function updateTopicAggregates(contest, topicId) {
+  // Recompute topic question stats from all question blocks tied to the topic (including subtópicos)
+  const topic = getTopicById(contest, topicId);
+  if (!topic) return;
+  const blocks = (contest.questions || []).filter(q => q.topicId === topicId);
+  const total = blocks.reduce((acc, q) => acc + (q.total || 0), 0);
+  const correct = blocks.reduce((acc, q) => acc + (q.correct || 0), 0);
+  topic.questions = total;
+  topic.accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+
+  // Aggregate time from subtópicos (timeSpent is stored in minutes) + keep existing topic.timeSpent (which may include direct time)
+  if (Array.isArray(topic.subtopics) && topic.subtopics.length > 0) {
+    const subMin = topic.subtopics.reduce((acc, st) => acc + (st.timeSpent || 0), 0);
+    // If topic.timeSpent already includes subtópicos (because we add to it), keep it; otherwise ensure minimum equals subMin
+    topic.timeSpent = Math.max(topic.timeSpent || 0, subMin);
+  }
+}
+
+function updateSubtopicStats(contest, topicId, subtopicId) {
+  const topic = getTopicById(contest, topicId);
+  const sub = getSubtopicById(topic, subtopicId);
+  if (!topic || !sub) return;
+  const blocks = (contest.questions || []).filter(q => q.topicId === topicId && q.subtopicId === subtopicId);
+  const total = blocks.reduce((acc, q) => acc + (q.total || 0), 0);
+  const correct = blocks.reduce((acc, q) => acc + (q.correct || 0), 0);
+  sub.questions = total;
+  sub.accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+}
+
+
+function recomputeTopicNextReview(topic) {
+  if (!topic) return;
+  const dates = [];
+  if (topic.nextReview) dates.push(topic.nextReview);
+  (topic.subtopics || []).forEach(st => { if (st.nextReview) dates.push(st.nextReview); });
+  if (dates.length === 0) {
+    topic.nextReview = null;
+    return;
+  }
+  const minIso = dates
+    .map(d => ({ iso: d, t: new Date(d).getTime() }))
+    .filter(o => !Number.isNaN(o.t))
+    .sort((a,b) => a.t - b.t)[0]?.iso;
+  topic.nextReview = minIso || topic.nextReview || null;
+
+function syncNextReviews(contest) {
+  if (!contest) return;
+  const syllabus = contest.syllabus || [];
+  // reset
+  syllabus.forEach(t => {
+    t.nextReview = null;
+    (t.subtopics || []).forEach(st => { st.nextReview = null; });
+  });
+
+  const pending = (contest.reviews || []).filter(r => !r.completed && r.dueDate);
+  pending.forEach(r => {
+    const topic = syllabus.find(t => t.id === r.topicId);
+    if (!topic) return;
+    if (r.subtopicId) {
+      const st = (topic.subtopics || []).find(s => s.id === r.subtopicId);
+      if (st) {
+        if (!st.nextReview || new Date(r.dueDate).getTime() < new Date(st.nextReview).getTime()) st.nextReview = r.dueDate;
+      }
+    } else {
+      if (!topic.nextReview || new Date(r.dueDate).getTime() < new Date(topic.nextReview).getTime()) topic.nextReview = r.dueDate;
+    }
+  });
+
+  syllabus.forEach(t => recomputeTopicNextReview(t));
+}
+}
+
+function setSessionPrefill(topicId, subtopicId) {
+  state.sessionPrefill = { topicId: topicId || null, subtopicId: subtopicId || null };
+  const contest = getCurrentContest();
+  if (contest) contest.currentTab = 'sessions';
+  saveToStorage();
+  render();
+}
+
+function goToPlanWithPrefill(topicId, subtopicId) {
+  state.sessionPrefill = { topicId: topicId || null, subtopicId: subtopicId || null };
+  const contest = getCurrentContest();
+  if (contest) contest.currentTab = 'plan';
+  saveToStorage();
+  render();
+}
+
+
+function updateSessionSubtopicOptions() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const topicSelect = document.getElementById('session-topic');
+  const subSelect = document.getElementById('session-subtopic');
+  if (!topicSelect || !subSelect) return;
+
+  const topicId = topicSelect.value || '';
+  const topic = (contest.syllabus || []).find(t => t.id === topicId);
+  const subs = topic ? (topic.subtopics || []) : [];
+
+  const currentVal = subSelect.value;
+  subSelect.innerHTML = `<option value="">Subtópico (opcional)</option>` + subs.map(st => `<option value="${st.id}">${st.name}</option>`).join('');
+
+  // Keep selection if still exists
+  if (currentVal && subs.some(st => st.id === currentVal)) {
+    subSelect.value = currentVal;
+  } else {
+    subSelect.value = '';
+  }
+}
+
+function applySessionPrefillIfAny() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  if (!state.sessionPrefill) return;
+
+  const topicSelect = document.getElementById('session-topic');
+  const subSelect = document.getElementById('session-subtopic');
+  if (!topicSelect || !subSelect) return;
+
+  if (state.sessionPrefill.topicId) {
+    topicSelect.value = state.sessionPrefill.topicId;
+  }
+  updateSessionSubtopicOptions();
+  if (state.sessionPrefill.subtopicId) {
+    subSelect.value = state.sessionPrefill.subtopicId;
+  }
+}
+
+function createManualReview(contest, topicId, subtopicId, dueDateIso) {
+  if (!contest) return;
+  const topic = getTopicById(contest, topicId);
+  if (!topic) return;
+  const sub = subtopicId ? getSubtopicById(topic, subtopicId) : null;
+
+  contest.reviews = contest.reviews || [];
+  contest.reviews.push({
+    id: generateId(),
+    topicId,
+    topicName: topic.name,
+    subtopicId: sub ? sub.id : null,
+    subtopicName: sub ? sub.name : null,
+    dueDate: dueDateIso,
+    completed: false,
+    interval: 0
+  });
+
+  // Store nextReview at the most specific level
+  if (sub) {
+    sub.nextReview = dueDateIso;
+  } else {
+    topic.nextReview = dueDateIso;
+  }
+
+  // Also keep topic.nextReview as the nearest review among its subtopics / itself
+  syncNextReviews(contest);
+}
+
+
+    function formatTime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function calculateProgress(items) {
+      if (!items || items.length === 0) return 0;
+      const completed = items.filter(i => i.status === 'completed').length;
+      return Math.round((completed / items.length) * 100);
+    }
+
+    // ===== ICONS =====
+    const icons = {
+      home: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>`,
+      dashboard: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"/></svg>`,
+      book: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>`,
+      calendar: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>`,
+      clock: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      chart: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
+      folder: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>`,
+      check: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      question: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      refresh: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>`,
+      file: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>`,
+      shield: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>`,
+      user: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`,
+      plus: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>`,
+      download: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>`,
+      upload: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>`,
+      trash: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`,
+      archive: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>`,
+      play: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      pause: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      stop: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/></svg>`,
+      chevronRight: `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>`,
+      chevronDown: `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>`,
+      menu: `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>`,
+      x: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`,
+      edit: `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>`,
+      target: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>`,
+      lightbulb: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>`,
+      award: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>`
+    };
+
+    // ===== RENDER FUNCTIONS =====
+    function render() {
+      const app = document.getElementById('app');
+      
+      if (state.currentScreen === 'profiles') {
+        app.innerHTML = renderProfilesScreen();
+      } else if (state.currentScreen === 'profileHome') {
+        app.innerHTML = renderProfileHomeScreen();
+      } else if (state.currentScreen === 'contest') {
+        app.innerHTML = renderContestScreen();
+      }
+      
+      attachEventListeners();
+    }
+
+    function renderProfilesScreen() {
+      const lastBackup = localStorage.getItem(APP_KEY) ? JSON.parse(localStorage.getItem(APP_KEY)).lastBackup : null;
+      
+      return `
+        <div class="min-h-full" style="background: ${config.background_color}">
+          <!-- Header -->
+          <header class="bg-gradient-to-r from-navy-900 to-navy-800 text-white shadow-lg">
+            <div class="max-w-6xl mx-auto px-6 py-8">
+              <div class="flex items-center gap-4">
+                <div class="w-14 h-14 bg-accent-500 rounded-xl flex items-center justify-center shadow-lg">
+                  ${icons.shield}
+                </div>
+                <div>
+                  <h1 class="text-2xl font-bold" id="app-title">${config.app_title}</h1>
+                  <p class="text-navy-300 text-sm">Sistema Offline de Gestão de Estudos para Concursos Policiais</p>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <main class="max-w-6xl mx-auto px-6 py-8">
+            <!-- Welcome Message -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+              <div class="flex items-center gap-3 mb-2">
+                ${icons.lightbulb}
+                <h2 class="text-lg font-semibold text-navy-900" id="welcome-msg">${config.welcome_message}</h2>
+              </div>
+              <p class="text-gray-600 text-sm">Seus dados são armazenados localmente no navegador. Exporte regularmente para backup.</p>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center text-accent-600">
+                    ${icons.user}
+                  </div>
+                  <div>
+                    <p class="text-2xl font-bold text-navy-900">${state.profiles.length}</p>
+                    <p class="text-sm text-gray-500">Perfis criados</p>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                    ${icons.folder}
+                  </div>
+                  <div>
+                    <p class="text-2xl font-bold text-navy-900">${state.profiles.reduce((acc, p) => acc + (p.contests?.length || 0), 0)}</p>
+                    <p class="text-sm text-gray-500">Concursos ativos</p>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center text-amber-600">
+                    ${icons.shield}
+                  </div>
+                  <div>
+                    <p class="text-sm font-medium text-navy-900">${lastBackup ? formatDate(lastBackup) : 'Nenhum'}</p>
+                    <p class="text-sm text-gray-500">Último backup</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex flex-wrap gap-3 mb-8">
+              <button onclick="showCreateProfileModal()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium shadow-sm">
+                ${icons.plus}
+                <span>Novo Perfil</span>
+              </button>
+              <button onclick="importData()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition font-medium border border-gray-200">
+                ${icons.upload}
+                <span>Importar JSON</span>
+              </button>
+              <button onclick="exportAllData()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition font-medium border border-gray-200">
+                ${icons.download}
+                <span>Exportar Tudo</span>
+              </button>
+            </div>
+
+            <!-- Profiles Grid -->
+            <h3 class="text-lg font-semibold text-navy-900 mb-4">Seus Perfis</h3>
+            ${state.profiles.length === 0 ? `
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+                <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  ${icons.user}
+                </div>
+                <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum perfil criado</h4>
+                <p class="text-gray-500 mb-4">Crie seu primeiro perfil para começar a organizar seus estudos.</p>
+                <button onclick="showCreateProfileModal()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">
+                  ${icons.plus}
+                  <span>Criar Perfil</span>
+                </button>
+              </div>
+            ` : `
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                ${state.profiles.map(profile => `
+                  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 card-hover cursor-pointer" onclick="selectProfile('${profile.id}')">
+                    <div class="flex items-start justify-between mb-4">
+                      <div class="w-12 h-12 bg-gradient-to-br from-accent-500 to-accent-600 rounded-xl flex items-center justify-center text-white font-bold text-lg">
+                        ${profile.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div class="flex gap-1">
+                        <button onclick="event.stopPropagation(); exportProfile('${profile.id}')" class="p-2 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded-lg transition" title="Exportar">
+                          ${icons.download}
+                        </button>
+                        <button onclick="event.stopPropagation(); deleteProfile('${profile.id}')" class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition" title="Excluir">
+                          ${icons.trash}
+                        </button>
+                      </div>
+                    </div>
+                    <h4 class="font-semibold text-navy-900 mb-1">${profile.name}</h4>
+                    <p class="text-sm text-gray-500 mb-3">${profile.contests?.length || 0} concurso(s)</p>
+                    <div class="flex items-center gap-2 text-xs text-gray-400">
+                      ${icons.calendar}
+                      <span>Criado em ${formatDate(profile.createdAt)}</span>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+
+            <!-- Offline Notice -->
+            <div class="mt-8 bg-navy-50 rounded-xl p-4 border border-navy-100">
+              <div class="flex items-center gap-3">
+                <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
+                <span class="text-sm font-medium text-navy-700">Sistema Offline</span>
+              </div>
+              <p class="text-sm text-navy-600 mt-1">Todos os dados são salvos localmente no seu navegador. Faça backups regulares exportando seus dados.</p>
+            </div>
+          </main>
+        </div>
+
+        <!-- Modal Container -->
+        <div id="modal-container"></div>
+      `;
+    }
+
+    function renderProfileHomeScreen() {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return '';
+
+      const contests = profile.contests || [];
+      const archivedContests = profile.archivedContests || [];
+
+      return `
+        <div class="min-h-full" style="background: ${config.background_color}">
+          <!-- Header -->
+          <header class="bg-gradient-to-r from-navy-900 to-navy-800 text-white shadow-lg">
+            <div class="max-w-6xl mx-auto px-6 py-6">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                  <button onclick="goToProfiles()" class="p-2 hover:bg-white/10 rounded-lg transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                  </button>
+                  <div class="w-12 h-12 bg-accent-500 rounded-xl flex items-center justify-center font-bold text-lg">
+                    ${profile.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <h1 class="text-xl font-bold">${profile.name}</h1>
+                    <p class="text-navy-300 text-sm">Gerenciar concursos</p>
+                  </div>
+                </div>
+                <div class="flex gap-2">
+                  <button onclick="exportProfile('${profile.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
+                    ${icons.download}
+                    <span>Exportar Perfil</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <main class="max-w-6xl mx-auto px-6 py-8">
+            <!-- Quick Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <p class="text-2xl font-bold text-navy-900">${contests.length}</p>
+                <p class="text-sm text-gray-500">Concursos Ativos</p>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <p class="text-2xl font-bold text-navy-900">${archivedContests.length}</p>
+                <p class="text-sm text-gray-500">Arquivados</p>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <p class="text-2xl font-bold text-navy-900">${formatTime(contests.reduce((acc, c) => acc + (c.sessions?.reduce((s, sess) => s + (sess.duration || 0), 0) || 0), 0))}</p>
+                <p class="text-sm text-gray-500">Total de Horas</p>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <p class="text-2xl font-bold text-navy-900">${contests.reduce((acc, c) => acc + (c.questions?.reduce((q, que) => q + (que.total || 0), 0) || 0), 0)}</p>
+                <p class="text-sm text-gray-500">Questões Feitas</p>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex gap-3 mb-8">
+              <button onclick="showCreateContestModal()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium shadow-sm">
+                ${icons.plus}
+                <span>Novo Concurso</span>
+              </button>
+            </div>
+
+            <!-- Contests Grid -->
+            <h3 class="text-lg font-semibold text-navy-900 mb-4">Concursos Ativos</h3>
+            ${contests.length === 0 ? `
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center mb-8">
+                <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  ${icons.target}
+                </div>
+                <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum concurso ativo</h4>
+                <p class="text-gray-500 mb-4">Adicione um concurso para começar seus estudos.</p>
+                <button onclick="showCreateContestModal()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">
+                  ${icons.plus}
+                  <span>Adicionar Concurso</span>
+                </button>
+              </div>
+            ` : `
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+                ${contests.map(contest => {
+                  const progress = calculateProgress(contest.syllabus || []);
+                  return `
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden card-hover cursor-pointer" onclick="selectContest('${contest.id}')">
+                      <div class="h-2 bg-gray-100">
+                        <div class="h-full bg-gradient-to-r from-accent-500 to-accent-400" style="width: ${progress}%"></div>
+                      </div>
+                      <div class="p-5">
+                        <div class="flex items-start justify-between mb-3">
+                          <div class="w-10 h-10 bg-navy-100 rounded-lg flex items-center justify-center text-navy-600">
+                            ${icons.target}
+                          </div>
+                          <div class="flex gap-1">
+                            <button onclick="event.stopPropagation(); archiveContest('${contest.id}')" class="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded transition" title="Arquivar">
+                              ${icons.archive}
+                            </button>
+                            <button onclick="event.stopPropagation(); exportContest('${contest.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Exportar">
+                              ${icons.download}
+                            </button>
+                          </div>
+                        </div>
+                        <h4 class="font-semibold text-navy-900 mb-1">${contest.name}</h4>
+                        <p class="text-sm text-gray-500 mb-3">${contest.organization || 'Sem órgão definido'}</p>
+                        <div class="flex items-center justify-between text-sm">
+                          <span class="text-gray-500">${progress}% concluído</span>
+                          <span class="text-accent-600 font-medium">${contest.syllabus?.length || 0} tópicos</span>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+
+            ${archivedContests.length > 0 ? `
+              <h3 class="text-lg font-semibold text-navy-900 mb-4">Concursos Arquivados</h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                ${archivedContests.map(contest => `
+                  <div class="bg-gray-50 rounded-xl border border-gray-200 p-5 opacity-75">
+                    <div class="flex items-start justify-between mb-3">
+                      <div class="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
+                        ${icons.archive}
+                      </div>
+                      <button onclick="unarchiveContest('${contest.id}')" class="text-sm text-accent-600 hover:underline">Desarquivar</button>
+                    </div>
+                    <h4 class="font-semibold text-gray-700">${contest.name}</h4>
+                    <p class="text-sm text-gray-500">${contest.organization || 'Sem órgão'}</p>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </main>
+        </div>
+
+        <div id="modal-container"></div>
+      `;
+    }
+
+    function renderContestScreen() {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!profile || !contest) return '';
+
+      const currentTab = contest.currentTab || 'dashboard';
+
+      return `
+        <div class="h-full flex" style="background: ${config.background_color}">
+          <!-- Sidebar -->
+          <aside class="w-64 bg-navy-900 text-white flex-shrink-0 flex flex-col">
+            <div class="p-4 border-b border-navy-700">
+              <button onclick="goToProfileHome()" class="flex items-center gap-2 text-navy-300 hover:text-white transition mb-3 text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                <span>Voltar</span>
+              </button>
+              <h2 class="font-bold text-lg truncate">${contest.name}</h2>
+              <p class="text-navy-400 text-sm truncate">${contest.organization || 'Concurso'}</p>
+            </div>
+            
+            <nav class="flex-1 py-4 overflow-y-auto">
+              <ul class="space-y-1 px-3">
+                <li>
+                  <button onclick="switchTab('dashboard')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'dashboard' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.dashboard}
+                    <span>Dashboard</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('syllabus')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'syllabus' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.book}
+                    <span>Edital Verticalizado</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('plan')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'plan' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.calendar}
+                    <span>Plano & Ciclo</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('sessions')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'sessions' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.clock}
+                    <span>Sessões</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('questions')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'questions' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.question}
+                    <span>Questões & Erros</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('reviews')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'reviews' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.refresh}
+                    <span>Revisões</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('simulations')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'simulations' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.award}
+                    <span>Simulados</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('files')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'files' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.folder}
+                    <span>Arquivos</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('reports')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'reports' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.chart}
+                    <span>Relatórios</span>
+                  </button>
+                </li>
+                <li>
+                  <button onclick="switchTab('backup')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'backup' ? 'active' : 'text-navy-300 hover:text-white'}">
+                    ${icons.shield}
+                    <span>Backup & Segurança</span>
+                  </button>
+                </li>
+              </ul>
+            </nav>
+
+            <div class="p-4 border-t border-navy-700">
+              <div class="flex items-center gap-2 text-xs text-navy-400">
+                <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
+                <span>Sistema Offline</span>
+              </div>
+            </div>
+          </aside>
+
+          <!-- Main Content -->
+          <main class="flex-1 overflow-auto">
+            ${renderTabContent(currentTab, contest)}
+          </main>
+        </div>
+
+        <div id="modal-container"></div>
+      `;
+    }
+
+    function renderTabContent(tab, contest) {
+      switch(tab) {
+        case 'dashboard': return renderDashboard(contest);
+        case 'syllabus': return renderSyllabus(contest);
+        case 'plan': return renderPlan(contest);
+        case 'sessions': return renderSessions(contest);
+        case 'questions': return renderQuestions(contest);
+        case 'reviews': return renderReviews(contest);
+        case 'simulations': return renderSimulations(contest);
+        case 'files': return renderFiles(contest);
+        case 'reports': return renderReports(contest);
+        case 'backup': return renderBackup(contest);
+        default: return renderDashboard(contest);
+      }
+    }
+
+    function renderDashboard(contest) {
+      const syllabus = contest.syllabus || [];
+      const sessions = contest.sessions || [];
+      const questions = contest.questions || [];
+      const reviews = contest.reviews || [];
+      
+      const progress = calculateProgress(syllabus);
+      const totalHours = sessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+      const weekHours = sessions.filter(s => {
+        const sessionDate = new Date(s.date);
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        return sessionDate >= weekAgo;
+      }).reduce((acc, s) => acc + (s.duration || 0), 0);
+      
+      const totalQuestions = questions.reduce((acc, q) => acc + (q.total || 0), 0);
+      const correctQuestions = questions.reduce((acc, q) => acc + (q.correct || 0), 0);
+      const accuracy = totalQuestions > 0 ? Math.round((correctQuestions / totalQuestions) * 100) : 0;
+      
+      const pendingReviews = reviews.filter(r => !r.completed && new Date(r.dueDate) <= new Date()).length;
+
+      // Suggestions
+      const suggestions = [];
+      const lowPerformanceTopics = syllabus.filter(s => s.accuracy && s.accuracy < 60);
+      const overdueReviews = reviews.filter(r => !r.completed && new Date(r.dueDate) < new Date());
+      
+      if (overdueReviews.length > 0) {
+        suggestions.push({ type: 'review', text: `${overdueReviews.length} revisão(ões) atrasada(s)`, priority: 'high' });
+      }
+      if (lowPerformanceTopics.length > 0) {
+        suggestions.push({ type: 'study', text: `Revisar: ${lowPerformanceTopics[0]?.name || 'Tópico com baixo desempenho'}`, priority: 'medium' });
+      }
+      const notStudied = syllabus.filter(s => !s.lastStudied);
+      if (notStudied.length > 0) {
+        suggestions.push({ type: 'new', text: `Iniciar: ${notStudied[0]?.name || 'Novo tópico'}`, priority: 'low' });
+      }
+
+      return `
+        <div class="p-6 fade-in">
+          <div class="mb-6">
+            <h1 class="text-2xl font-bold text-navy-900">Dashboard</h1>
+            <p class="text-gray-500">Visão geral do seu progresso</p>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-gray-500 text-sm">Progresso do Edital</span>
+                <div class="w-8 h-8 bg-accent-100 rounded-lg flex items-center justify-center text-accent-600">
+                  ${icons.target}
+                </div>
+              </div>
+              <p class="text-3xl font-bold text-navy-900">${progress}%</p>
+              <div class="mt-2 h-2 bg-gray-100 rounded-full">
+                <div class="h-full bg-accent-500 rounded-full transition-all" style="width: ${progress}%"></div>
+              </div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-gray-500 text-sm">Horas esta Semana</span>
+                <div class="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                  ${icons.clock}
+                </div>
+              </div>
+              <p class="text-3xl font-bold text-navy-900">${formatTime(weekHours)}</p>
+              <p class="text-sm text-gray-500 mt-1">Total: ${formatTime(totalHours)}</p>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-gray-500 text-sm">Taxa de Acerto</span>
+                <div class="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center text-amber-600">
+                  ${icons.check}
+                </div>
+              </div>
+              <p class="text-3xl font-bold text-navy-900">${accuracy}%</p>
+              <p class="text-sm text-gray-500 mt-1">${totalQuestions} questões</p>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-gray-500 text-sm">Revisões Pendentes</span>
+                <div class="w-8 h-8 ${pendingReviews > 0 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'} rounded-lg flex items-center justify-center">
+                  ${icons.refresh}
+                </div>
+              </div>
+              <p class="text-3xl font-bold ${pendingReviews > 0 ? 'text-red-600' : 'text-navy-900'}">${pendingReviews}</p>
+              <p class="text-sm text-gray-500 mt-1">Atrasadas</p>
+            </div>
+          </div>
+
+          <!-- Two Column Layout -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- What to Study Today -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center gap-2 mb-4">
+                ${icons.lightbulb}
+                <h3 class="font-semibold text-navy-900">O que estudar hoje?</h3>
+              </div>
+              ${suggestions.length === 0 ? `
+                <div class="text-center py-6 text-gray-500">
+                  <p>Adicione tópicos ao edital para receber sugestões personalizadas.</p>
+                </div>
+              ` : `
+                <ul class="space-y-3">
+                  ${suggestions.slice(0, 5).map(s => `
+                    <li class="flex items-center gap-3 p-3 rounded-lg ${s.priority === 'high' ? 'bg-red-50 border border-red-100' : s.priority === 'medium' ? 'bg-amber-50 border border-amber-100' : 'bg-gray-50 border border-gray-100'}">
+                      <div class="w-2 h-2 rounded-full ${s.priority === 'high' ? 'bg-red-500' : s.priority === 'medium' ? 'bg-amber-500' : 'bg-gray-400'}"></div>
+                      <span class="text-sm text-navy-700">${s.text}</span>
+                    </li>
+                  `).join('')}
+                </ul>
+              `}
+            </div>
+
+            <!-- Recent Activity Chart Placeholder -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <div class="flex items-center gap-2 mb-4">
+                ${icons.chart}
+                <h3 class="font-semibold text-navy-900">Horas por Dia (Últimos 7 dias)</h3>
+              </div>
+              <div class="h-48 flex items-end justify-around gap-2 px-4">
+                ${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((day, i) => {
+                  const dayDate = new Date();
+                  dayDate.setDate(dayDate.getDate() - (6 - i));
+                  const dayHours = sessions.filter(s => {
+                    const sDate = new Date(s.date);
+                    return sDate.toDateString() === dayDate.toDateString();
+                  }).reduce((acc, s) => acc + (s.duration || 0), 0) / 60;
+                  const height = Math.min(dayHours * 20, 100);
+                  return `
+                    <div class="flex flex-col items-center gap-2">
+                      <div class="w-8 bg-accent-500 rounded-t" style="height: ${Math.max(height, 4)}px"></div>
+                      <span class="text-xs text-gray-500">${day}</span>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    
+function renderSyllabus(contest) {
+  const syllabus = contest.syllabus || [];
+
+  // If a topic is selected, show the subtópicos view (same design system)
+  if (state.currentSyllabusTopicId) {
+    const topic = syllabus.find(t => t.id === state.currentSyllabusTopicId);
+    if (!topic) {
+      state.currentSyllabusTopicId = null;
+      saveToStorage();
+      return renderSyllabus(contest);
+    }
+    const subtopics = topic.subtopics || [];
+
+    return `
+      <div class="p-6 fade-in">
+        <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center gap-3">
+            <button onclick="backToSyllabusList()" class="inline-flex items-center gap-2 px-3 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+              <span class="text-lg">←</span>
+              <span>Voltar</span>
+            </button>
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">${topic.name}</h1>
+              <p class="text-gray-500">Gerencie subtópicos e acompanhe desempenho detalhado</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="goToPlanWithPrefill('${topic.id}', null)" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+              ${icons.calendar}
+              <span>Ir para Cronograma</span>
+            </button>
+            <button onclick="showAddSubtopicModal('${topic.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+              ${icons.plus}
+              <span>Adicionar Subtópico</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Topic Summary -->
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p class="text-sm text-gray-500">Status</p>
+            <p class="font-semibold text-navy-900 mt-1">${topic.status === 'completed' ? 'Concluído' : topic.status === 'in_progress' ? 'Em progresso' : 'Pendente'}</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p class="text-sm text-gray-500">Questões</p>
+            <p class="text-2xl font-bold text-navy-900 mt-1">${topic.questions || 0}</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p class="text-sm text-gray-500">% Acerto</p>
+            <p class="text-2xl font-bold ${(topic.accuracy || 0) >= 70 ? 'text-green-600' : (topic.accuracy || 0) >= 50 ? 'text-amber-600' : 'text-red-600'} mt-1">${topic.accuracy || 0}%</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p class="text-sm text-gray-500">Tempo</p>
+            <p class="text-2xl font-bold text-navy-900 mt-1">${topic.timeSpent || 0}min</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p class="text-sm text-gray-500">Próx. Revisão</p>
+            <p class="font-semibold text-navy-900 mt-1">${topic.nextReview ? formatDate(topic.nextReview) : '-'}</p>
+          </div>
+        </div>
+
+        <!-- Subtopics Table -->
+        ${subtopics.length === 0 ? `
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+            <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              ${icons.book}
+            </div>
+            <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum subtópico cadastrado</h4>
+            <p class="text-gray-500 mb-4">Adicione os assuntos internos deste tópico (subtemas).</p>
+            <button onclick="showAddSubtopicModal('${topic.id}')" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">
+              ${icons.plus}
+              <span>Adicionar Subtópico</span>
+            </button>
+          </div>
+        ` : `
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead class="bg-gray-50 border-b border-gray-100">
+                  <tr>
+                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Subtópico</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Prioridade</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Questões</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">% Acerto</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tempo</th>
+                    <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Próx. Revisão</th>
+                    <th class="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Ações</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                  ${subtopics.map(st => `
+                    <tr class="tree-item">
+                      <td class="px-4 py-3">
+                        <div class="flex items-center gap-2">
+                          <span class="w-2 h-2 rounded-full ${st.status === 'completed' ? 'bg-green-500' : st.status === 'in_progress' ? 'bg-amber-500' : 'bg-gray-300'}"></span>
+                          <span class="font-medium text-navy-900">${st.name}</span>
+                        </div>
+                      </td>
+                      <td class="px-4 py-3 text-center">
+                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${st.status === 'completed' ? 'bg-green-100 text-green-700' : st.status === 'in_progress' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}">
+                          ${st.status === 'completed' ? 'Concluído' : st.status === 'in_progress' ? 'Em progresso' : 'Pendente'}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-center">
+                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${st.priority === 'high' ? 'bg-red-100 text-red-700' : st.priority === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}">
+                          ${st.priority === 'high' ? 'Alta' : st.priority === 'medium' ? 'Média' : 'Baixa'}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-center text-sm text-gray-600">${st.questions || 0}</td>
+                      <td class="px-4 py-3 text-center">
+                        <span class="text-sm font-medium ${(st.accuracy || 0) >= 70 ? 'text-green-600' : (st.accuracy || 0) >= 50 ? 'text-amber-600' : 'text-red-600'}">${st.accuracy || 0}%</span>
+                      </td>
+                      <td class="px-4 py-3 text-center text-sm text-gray-600">${st.timeSpent || 0}min</td>
+                      <td class="px-4 py-3 text-center text-sm text-gray-600">${st.nextReview ? formatDate(st.nextReview) : '-'}</td>
+                      <td class="px-4 py-3 text-right">
+                        <div class="flex items-center justify-end gap-1">
+                          <button onclick="setSessionPrefill('${topic.id}','${st.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Iniciar sessão">
+                            ${icons.play}
+                          </button>
+                          <button onclick="promptManualReview('${topic.id}','${st.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Agendar revisão">
+                            ${icons.refresh}
+                          </button>
+                          <button onclick="editSubtopic('${topic.id}','${st.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Editar">
+                            ${icons.edit}
+                          </button>
+                          <button onclick="deleteSubtopic('${topic.id}','${st.id}')" class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="Excluir">
+                            ${icons.trash}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="p-6 fade-in">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h1 class="text-2xl font-bold text-navy-900">Edital Verticalizado</h1>
+          <p class="text-gray-500">Organize e acompanhe os tópicos do edital</p>
+        </div>
+        <button onclick="showAddTopicModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+          ${icons.plus}
+          <span>Adicionar Tópico</span>
+        </button>
+      </div>
+
+      ${syllabus.length === 0 ? `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+          <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            ${icons.book}
+          </div>
+          <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum tópico cadastrado</h4>
+          <p class="text-gray-500 mb-4">Comece adicionando as disciplinas e tópicos do seu edital.</p>
+          <button onclick="showAddTopicModal()" class="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">
+            ${icons.plus}
+            <span>Adicionar Tópico</span>
+          </button>
+        </div>
+      ` : `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead class="bg-gray-50 border-b border-gray-100">
+                <tr>
+                  <th class="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tópico</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Prioridade</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Questões</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">% Acerto</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tempo</th>
+                  <th class="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Próx. Revisão</th>
+                  <th class="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Ações</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                ${syllabus.map(topic => `
+                  <tr class="tree-item">
+                    <td class="px-4 py-3">
+                      <button onclick="openTopicDetails('${topic.id}')" class="text-left w-full">
+                        <div class="flex items-center gap-2">
+                          <span class="w-2 h-2 rounded-full ${topic.status === 'completed' ? 'bg-green-500' : topic.status === 'in_progress' ? 'bg-amber-500' : 'bg-gray-300'}"></span>
+                          <span class="font-medium text-navy-900 hover:text-accent-700 transition">${topic.name}</span>
+                          ${topic.parent ? `<span class="text-xs text-gray-400">(${topic.parent})</span>` : ''}
+                          <span class="ml-auto text-gray-300">${icons.chevronRight}</span>
+                        </div>
+                      </button>
+                    </td>
+                    <td class="px-4 py-3 text-center">
+                      <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${topic.status === 'completed' ? 'bg-green-100 text-green-700' : topic.status === 'in_progress' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}">
+                        ${topic.status === 'completed' ? 'Concluído' : topic.status === 'in_progress' ? 'Em progresso' : 'Pendente'}
+                      </span>
+                    </td>
+                    <td class="px-4 py-3 text-center">
+                      <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${topic.priority === 'high' ? 'bg-red-100 text-red-700' : topic.priority === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}">
+                        ${topic.priority === 'high' ? 'Alta' : topic.priority === 'medium' ? 'Média' : 'Baixa'}
+                      </span>
+                    </td>
+                    <td class="px-4 py-3 text-center text-sm text-gray-600">${topic.questions || 0}</td>
+                    <td class="px-4 py-3 text-center">
+                      <span class="text-sm font-medium ${(topic.accuracy || 0) >= 70 ? 'text-green-600' : (topic.accuracy || 0) >= 50 ? 'text-amber-600' : 'text-red-600'}">${topic.accuracy || 0}%</span>
+                    </td>
+                    <td class="px-4 py-3 text-center text-sm text-gray-600">${topic.timeSpent || 0}min</td>
+                    <td class="px-4 py-3 text-center text-sm text-gray-600">${topic.nextReview ? formatDate(topic.nextReview) : '-'}</td>
+                    <td class="px-4 py-3 text-right">
+                      <div class="flex items-center justify-end gap-1">
+                        <button onclick="openTopicDetails('${topic.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Subtópicos">
+                          ${icons.chevronRight}
+                        </button>
+                        <button onclick="editTopic('${topic.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Editar">
+                          ${icons.edit}
+                        </button>
+                        <button onclick="deleteTopic('${topic.id}')" class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="Excluir">
+                          ${icons.trash}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderPlan(contest) {
+  const plan = contest.plan || { mode: 'pre', weeklyGoal: 20, questionGoal: 100, schedules: {
+    pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
+    post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
+  } };
+  plan.schedules = plan.schedules || {
+    pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
+    post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
+  };
+  const activeSchedule = plan.schedules[plan.mode || 'pre'] || (plan.schedules[plan.mode || 'pre'] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
+
+  const syllabus = contest.syllabus || [];
+  const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+  function renderScheduleItem(item, dayIndex) {
+    const topic = syllabus.find(t => t.id === item.topicId);
+    const topicName = topic?.name || item.topicName || 'Tópico';
+    const sub = item.subtopicId ? (topic?.subtopics || []).find(st => st.id === item.subtopicId) : null;
+    const label = sub ? `${topicName} • ${sub.name}` : topicName;
+    const badge = item.type === 'theory' ? 'Teoria' : item.type === 'questions' ? 'Questões' : item.type === 'review' ? 'Revisão' : 'Videoaula';
+    const qtxt = item.questionsTarget ? `${item.questionsTarget}q` : '';
+    const ttxt = item.minutesTarget ? `${item.minutesTarget}min` : '';
+    const meta = [badge, qtxt, ttxt].filter(Boolean).join(' • ');
+    return `
+      <div class="bg-white rounded-lg border border-gray-100 p-2 text-left mb-2">
+        <div class="flex items-start justify-between gap-2">
+          <button onclick="openTopicDetails('${item.topicId}')" class="text-left flex-1">
+            <div class="text-xs font-semibold text-navy-900">${label}</div>
+            <div class="text-[11px] text-gray-500 mt-0.5">${meta}</div>
+          </button>
+          <div class="flex items-center gap-1">
+            <button onclick="setSessionPrefill('${item.topicId}','${item.subtopicId || ''}')" class="p-1 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Iniciar sessão">
+              ${icons.play}
+            </button>
+            <button onclick="deleteScheduleItem(${dayIndex}, '${item.id}')" class="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="Remover">
+              ${icons.trash}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="p-6 fade-in">
+      <div class="mb-6">
+        <h1 class="text-2xl font-bold text-navy-900">Plano & Ciclo de Estudos</h1>
+        <p class="text-gray-500">Configure seu cronograma e metas</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Mode Selection -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Modo de Estudo</h3>
+          <div class="flex gap-3">
+            <button onclick="setPlanMode('pre')" class="flex-1 p-4 rounded-xl border-2 transition ${plan.mode === 'pre' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+              <div class="font-medium text-navy-900 mb-1">Pré-Edital</div>
+              <p class="text-sm text-gray-500">Foco em base teórica e revisões</p>
+            </button>
+            <button onclick="setPlanMode('post')" class="flex-1 p-4 rounded-xl border-2 transition ${plan.mode === 'post' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+              <div class="font-medium text-navy-900 mb-1">Pós-Edital</div>
+              <p class="text-sm text-gray-500">Foco em questões e simulados</p>
+            </button>
+          </div>
+        </div>
+
+        <!-- Goals -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Metas Semanais</h3>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm text-gray-600 mb-2">Horas de Estudo</label>
+              <input type="number" value="${plan.weeklyGoal || 20}" onchange="updatePlanGoal('weeklyGoal', this.value)" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 mb-2">Questões</label>
+              <input type="number" value="${plan.questionGoal || 100}" onchange="updatePlanGoal('questionGoal', this.value)" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+          </div>
+        </div>
+
+        <!-- Weekly Schedule -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold text-navy-900">Cronograma Semanal</h3>
+            <p class="text-xs text-gray-500">Clique no + para adicionar matéria/tópico/subtópico e tipo de estudo</p>
+          </div>
+          <div class="grid grid-cols-7 gap-2">
+            ${days.map((day, i) => `
+              <div class="text-center">
+                <div class="text-xs font-medium text-gray-500 mb-2">${day}</div>
+                <div class="bg-gray-50 rounded-lg p-2 min-h-24 border border-gray-100 text-left">
+                  ${(activeSchedule[i] || []).map(item => renderScheduleItem(item, i)).join('')}
+                  <button onclick="addScheduleItem(${i})" class="w-full text-center text-gray-400 hover:text-accent-600 transition py-1">
+                    ${icons.plus}
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function renderSessions(contest) {
+      const sessions = contest.sessions || [];
+      const syllabus = contest.syllabus || [];
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">Sessões de Estudo</h1>
+              <p class="text-gray-500">Registre e acompanhe seu tempo de estudo</p>
+            </div>
+          </div>
+
+          <!-- Timer Card -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+            <div class="flex items-center justify-between mb-6">
+              <h3 class="font-semibold text-navy-900">Cronômetro</h3>
+              <div class="flex gap-2">
+                <select id="session-topic" onchange="updateSessionSubtopicOptions()" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                  <option value="">Selecione o tópico...</option>
+                  ${syllabus.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}
+                </select>
+                <select id="session-subtopic" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                  <option value="">Subtópico (opcional)</option>
+                </select>
+                <select id="session-type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                  <option value="theory">Teoria</option>
+                  <option value="questions">Questões</option>
+                  <option value="review">Revisão</option>
+                  <option value="video">Videoaula</option>
+                </select>
+              </div>
+            </div>
+            
+            <div class="text-center">
+              <div class="text-6xl font-mono font-bold text-navy-900 mb-6" id="timer-display">${formatTime(state.timerSeconds)}</div>
+              <div class="flex items-center justify-center gap-4">
+                ${!state.timerRunning ? `
+                  <button onclick="startTimer()" class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition font-medium">
+                    ${icons.play}
+                    <span>Iniciar</span>
+                  </button>
+                ` : `
+                  <button onclick="pauseTimer()" class="inline-flex items-center gap-2 px-6 py-3 bg-amber-600 text-white rounded-xl hover:bg-amber-700 transition font-medium">
+                    ${icons.pause}
+                    <span>Pausar</span>
+                  </button>
+                `}
+                <button onclick="stopTimer()" class="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-medium" ${state.timerSeconds === 0 ? 'disabled class="opacity-50"' : ''}>
+                  ${icons.stop}
+                  <span>Finalizar</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sessions History -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100">
+              <h3 class="font-semibold text-navy-900">Histórico de Sessões</h3>
+            </div>
+            ${sessions.length === 0 ? `
+              <div class="p-12 text-center text-gray-500">
+                <p>Nenhuma sessão registrada ainda.</p>
+              </div>
+            ` : `
+              <div class="divide-y divide-gray-100">
+                ${sessions.slice(0, 10).map(session => `
+                  <div class="px-5 py-4 flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                      <div class="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center text-accent-600">
+                        ${icons.clock}
+                      </div>
+                      <div>
+                        <p class="font-medium text-navy-900">${session.topicName || 'Sem tópico'}</p>
+                        <p class="text-sm text-gray-500">${session.type === 'theory' ? 'Teoria' : session.type === 'questions' ? 'Questões' : session.type === 'review' ? 'Revisão' : 'Videoaula'} • ${formatDate(session.date)}</p>
+                      </div>
+                    </div>
+                    <div class="text-right">
+                      <p class="font-medium text-navy-900">${Math.round(session.duration / 60)}min</p>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderQuestions(contest) {
+      const questions = contest.questions || [];
+      const syllabus = contest.syllabus || [];
+      
+      const totalQuestions = questions.reduce((acc, q) => acc + (q.total || 0), 0);
+      const correctQuestions = questions.reduce((acc, q) => acc + (q.correct || 0), 0);
+      const errorQuestions = totalQuestions - correctQuestions;
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">Questões & Erros</h1>
+              <p class="text-gray-500">Registre e analise seu desempenho em questões</p>
+            </div>
+            <button onclick="showAddQuestionsModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+              ${icons.plus}
+              <span>Registrar Questões</span>
+            </button>
+          </div>
+
+          <!-- Stats -->
+          <div class="grid grid-cols-3 gap-4 mb-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-navy-900">${totalQuestions}</p>
+              <p class="text-sm text-gray-500">Total de Questões</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-green-600">${correctQuestions}</p>
+              <p class="text-sm text-gray-500">Acertos</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-red-600">${errorQuestions}</p>
+              <p class="text-sm text-gray-500">Erros</p>
+            </div>
+          </div>
+
+          <!-- Questions List -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100">
+              <h3 class="font-semibold text-navy-900">Blocos de Questões</h3>
+            </div>
+            ${questions.length === 0 ? `
+              <div class="p-12 text-center text-gray-500">
+                <p>Nenhum bloco de questões registrado.</p>
+              </div>
+            ` : `
+              <div class="divide-y divide-gray-100">
+                ${questions.map(q => `
+                  <div class="px-5 py-4 flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                      <div class="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center text-accent-600">
+                        ${icons.question}
+                      </div>
+                      <div>
+                        <p class="font-medium text-navy-900">${q.subtopicName ? `${q.topicName} • ${q.subtopicName}` : (q.topicName || 'Geral')}</p>
+                        <p class="text-sm text-gray-500">${q.source || 'Sem fonte'} • ${formatDate(q.date)}</p>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                      <div class="text-right">
+                        <p class="font-medium text-navy-900">${q.correct}/${q.total}</p>
+                        <p class="text-sm ${(q.correct / q.total * 100) >= 70 ? 'text-green-600' : 'text-red-600'}">${Math.round(q.correct / q.total * 100)}%</p>
+                      </div>
+                      <button onclick="deleteQuestionBlock('${q.id}')" class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition">
+                        ${icons.trash}
+                      </button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderReviews(contest) {
+      const reviews = contest.reviews || [];
+      const settings = contest.reviewSettings || { intervals: [1, 7, 30] };
+      
+      const pending = reviews.filter(r => !r.completed);
+      const overdue = pending.filter(r => new Date(r.dueDate) < new Date());
+      const today = pending.filter(r => {
+        const due = new Date(r.dueDate);
+        const now = new Date();
+        return due.toDateString() === now.toDateString();
+      });
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">Revisões</h1>
+              <p class="text-gray-500">Gerencie suas revisões espaçadas</p>
+            </div>
+            <button onclick="showReviewSettingsModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+              ${icons.edit}
+              <span>Configurar Intervalos</span>
+            </button>
+          </div>
+
+          <!-- Review Stats -->
+          <div class="grid grid-cols-3 gap-4 mb-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-red-600">${overdue.length}</p>
+              <p class="text-sm text-gray-500">Atrasadas</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-amber-600">${today.length}</p>
+              <p class="text-sm text-gray-500">Para Hoje</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-center">
+              <p class="text-3xl font-bold text-navy-900">${pending.length}</p>
+              <p class="text-sm text-gray-500">Total Pendentes</p>
+            </div>
+          </div>
+
+          <!-- Intervals Config Display -->
+          <div class="bg-navy-50 rounded-xl p-4 mb-6 border border-navy-100">
+            <p class="text-sm text-navy-700">
+              <strong>Intervalos configurados:</strong> ${settings.intervals.join(' → ')} dias
+            </p>
+          </div>
+
+          <!-- Pending Reviews -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100">
+              <h3 class="font-semibold text-navy-900">Agenda de Revisões</h3>
+            </div>
+            ${pending.length === 0 ? `
+              <div class="p-12 text-center text-gray-500">
+                <p>Nenhuma revisão pendente.</p>
+              </div>
+            ` : `
+              <div class="divide-y divide-gray-100">
+                ${pending.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate)).map(review => {
+                  const isOverdue = new Date(review.dueDate) < new Date();
+                  const isToday = new Date(review.dueDate).toDateString() === new Date().toDateString();
+                  return `
+                    <div class="px-5 py-4 flex items-center justify-between ${isOverdue ? 'bg-red-50' : isToday ? 'bg-amber-50' : ''}">
+                      <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 ${isOverdue ? 'bg-red-100 text-red-600' : 'bg-accent-100 text-accent-600'} rounded-lg flex items-center justify-center">
+                          ${icons.refresh}
+                        </div>
+                        <div>
+                          <p class="font-medium text-navy-900">${review.topicName || 'Tópico'}</p>
+                          <p class="text-sm ${isOverdue ? 'text-red-600' : 'text-gray-500'}">
+                            ${isOverdue ? 'Atrasada desde ' : ''}${formatDate(review.dueDate)}
+                          </p>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <button onclick="completeReview('${review.id}')" class="inline-flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm">
+                          ${icons.check}
+                          <span>Concluir</span>
+                        </button>
+                        <button onclick="postponeReview('${review.id}')" class="inline-flex items-center gap-1 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
+                          <span>Adiar</span>
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSimulations(contest) {
+      const simulations = contest.simulations || [];
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">Simulados</h1>
+              <p class="text-gray-500">Registre e acompanhe seu desempenho em simulados</p>
+            </div>
+            <button onclick="showAddSimulationModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+              ${icons.plus}
+              <span>Novo Simulado</span>
+            </button>
+          </div>
+
+          ${simulations.length === 0 ? `
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+              <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                ${icons.award}
+              </div>
+              <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum simulado registrado</h4>
+              <p class="text-gray-500 mb-4">Registre seus simulados para acompanhar a evolução.</p>
+            </div>
+          ` : `
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              ${simulations.slice(0, 6).map(sim => `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                  <div class="flex items-start justify-between mb-3">
+                    <div>
+                      <h4 class="font-semibold text-navy-900">${sim.name}</h4>
+                      <p class="text-sm text-gray-500">${formatDate(sim.date)}</p>
+                    </div>
+                    <div class="text-right">
+                      <p class="text-2xl font-bold ${sim.score >= 70 ? 'text-green-600' : sim.score >= 50 ? 'text-amber-600' : 'text-red-600'}">${sim.score}%</p>
+                      <p class="text-sm text-gray-500">${sim.correct}/${sim.total}</p>
+                    </div>
+                  </div>
+                  <div class="h-2 bg-gray-100 rounded-full">
+                    <div class="h-full rounded-full ${sim.score >= 70 ? 'bg-green-500' : sim.score >= 50 ? 'bg-amber-500' : 'bg-red-500'}" style="width: ${sim.score}%"></div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    function renderFiles(contest) {
+      const files = contest.files || [];
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h1 class="text-2xl font-bold text-navy-900">Arquivos</h1>
+              <p class="text-gray-500">Biblioteca de materiais do concurso</p>
+            </div>
+            <button onclick="showAddFileModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+              ${icons.plus}
+              <span>Adicionar Arquivo</span>
+            </button>
+          </div>
+
+          ${files.length === 0 ? `
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+              <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                ${icons.folder}
+              </div>
+              <h4 class="text-lg font-medium text-navy-900 mb-2">Nenhum arquivo cadastrado</h4>
+              <p class="text-gray-500 mb-4">Organize seus materiais de estudo aqui.</p>
+            </div>
+          ` : `
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              ${files.map(file => `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 card-hover">
+                  <div class="flex items-start gap-3">
+                    <div class="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center text-accent-600 flex-shrink-0">
+                      ${icons.file}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <h4 class="font-medium text-navy-900 truncate">${file.name}</h4>
+                      <p class="text-sm text-gray-500">${file.discipline || 'Geral'}</p>
+                      ${file.tags ? `<div class="flex flex-wrap gap-1 mt-2">${file.tags.split(',').map(t => `<span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">${t.trim()}</span>`).join('')}</div>` : ''}
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    function renderReports(contest) {
+      const sessions = contest.sessions || [];
+      const questions = contest.questions || [];
+      const syllabus = contest.syllabus || [];
+      
+      // Hours by discipline
+      const hoursByDiscipline = {};
+      sessions.forEach(s => {
+        const topic = syllabus.find(t => t.id === s.topicId);
+        const discipline = topic?.parent || topic?.name || 'Outros';
+        hoursByDiscipline[discipline] = (hoursByDiscipline[discipline] || 0) + (s.duration || 0);
+      });
+      
+      // Accuracy by topic
+      const accuracyByTopic = {};
+      questions.forEach(q => {
+        const topic = syllabus.find(t => t.id === q.topicId);
+        const name = topic?.name || 'Geral';
+        if (!accuracyByTopic[name]) {
+          accuracyByTopic[name] = { correct: 0, total: 0 };
+        }
+        accuracyByTopic[name].correct += q.correct;
+        accuracyByTopic[name].total += q.total;
+      });
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="mb-6">
+            <h1 class="text-2xl font-bold text-navy-900">Relatórios</h1>
+            <p class="text-gray-500">Análise detalhada do seu desempenho</p>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Hours by Discipline -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="font-semibold text-navy-900 mb-4">Horas por Disciplina</h3>
+              ${Object.keys(hoursByDiscipline).length === 0 ? `
+                <p class="text-gray-500 text-center py-8">Registre sessões de estudo para ver estatísticas.</p>
+              ` : `
+                <div class="space-y-3">
+                  ${Object.entries(hoursByDiscipline).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, seconds]) => `
+                    <div>
+                      <div class="flex justify-between text-sm mb-1">
+                        <span class="text-navy-700">${name}</span>
+                        <span class="text-gray-500">${formatTime(seconds)}</span>
+                      </div>
+                      <div class="h-2 bg-gray-100 rounded-full">
+                        <div class="h-full bg-accent-500 rounded-full" style="width: ${Math.min(seconds / Math.max(...Object.values(hoursByDiscipline)) * 100, 100)}%"></div>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+
+            <!-- Accuracy by Topic -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="font-semibold text-navy-900 mb-4">% Acertos por Matéria</h3>
+              ${Object.keys(accuracyByTopic).length === 0 ? `
+                <p class="text-gray-500 text-center py-8">Registre questões para ver estatísticas.</p>
+              ` : `
+                <div class="space-y-3">
+                  ${Object.entries(accuracyByTopic).map(([name, data]) => {
+                    const accuracy = Math.round(data.correct / data.total * 100);
+                    return `
+                      <div>
+                        <div class="flex justify-between text-sm mb-1">
+                          <span class="text-navy-700">${name}</span>
+                          <span class="${accuracy >= 70 ? 'text-green-600' : accuracy >= 50 ? 'text-amber-600' : 'text-red-600'}">${accuracy}%</span>
+                        </div>
+                        <div class="h-2 bg-gray-100 rounded-full">
+                          <div class="h-full rounded-full ${accuracy >= 70 ? 'bg-green-500' : accuracy >= 50 ? 'bg-amber-500' : 'bg-red-500'}" style="width: ${accuracy}%"></div>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              `}
+            </div>
+
+            <!-- Critical Topics -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
+              <h3 class="font-semibold text-navy-900 mb-4">Tópicos Críticos (Baixo Desempenho)</h3>
+              ${syllabus.filter(t => t.accuracy && t.accuracy < 60).length === 0 ? `
+                <p class="text-gray-500 text-center py-8">Nenhum tópico com baixo desempenho identificado.</p>
+              ` : `
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  ${syllabus.filter(t => t.accuracy && t.accuracy < 60).map(topic => `
+                    <div class="bg-red-50 border border-red-100 rounded-lg p-3">
+                      <p class="font-medium text-navy-900">${topic.name}</p>
+                      <p class="text-sm text-red-600">${topic.accuracy}% de acertos</p>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderBackup(contest) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const trash = contest.trash || [];
+      
+      return `
+        <div class="p-6 fade-in">
+          <div class="mb-6">
+            <h1 class="text-2xl font-bold text-navy-900">Backup & Segurança</h1>
+            <p class="text-gray-500">Exporte e proteja seus dados</p>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Export Options -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="font-semibold text-navy-900 mb-4">Exportar Dados</h3>
+              <div class="space-y-3">
+                <button onclick="exportContest('${contest.id}')" class="w-full flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
+                  <div class="flex items-center gap-3">
+                    ${icons.download}
+                    <div class="text-left">
+                      <p class="font-medium text-navy-900">Exportar Concurso</p>
+                      <p class="text-sm text-gray-500">Apenas este concurso</p>
+                    </div>
+                  </div>
+                  ${icons.chevronRight}
+                </button>
+                <button onclick="exportProfile('${profile?.id}')" class="w-full flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
+                  <div class="flex items-center gap-3">
+                    ${icons.download}
+                    <div class="text-left">
+                      <p class="font-medium text-navy-900">Exportar Perfil Completo</p>
+                      <p class="text-sm text-gray-500">Todos os concursos do perfil</p>
+                    </div>
+                  </div>
+                  ${icons.chevronRight}
+                </button>
+              </div>
+            </div>
+
+            <!-- Import -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="font-semibold text-navy-900 mb-4">Importar Dados</h3>
+              <div class="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center">
+                <div class="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  ${icons.upload}
+                </div>
+                <p class="text-gray-600 mb-3">Arraste um arquivo JSON ou</p>
+                <button onclick="importData()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                  ${icons.upload}
+                  <span>Selecionar Arquivo</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Trash -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
+              <h3 class="font-semibold text-navy-900 mb-4">Lixeira</h3>
+              ${trash.length === 0 ? `
+                <p class="text-gray-500 text-center py-8">A lixeira está vazia.</p>
+              ` : `
+                <div class="space-y-2">
+                  ${trash.map(item => `
+                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <div class="flex items-center gap-3">
+                        ${icons.trash}
+                        <div>
+                          <p class="font-medium text-navy-900">${item.name}</p>
+                          <p class="text-sm text-gray-500">Excluído em ${formatDate(item.deletedAt)}</p>
+                        </div>
+                      </div>
+                      <button onclick="restoreFromTrash('${item.id}')" class="text-sm text-accent-600 hover:underline">Restaurar</button>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          </div>
+
+          <!-- Offline Notice -->
+          <div class="mt-6 bg-navy-50 rounded-xl p-4 border border-navy-100">
+            <div class="flex items-center gap-3">
+              <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
+              <span class="text-sm font-medium text-navy-700">Sistema 100% Offline</span>
+            </div>
+            <p class="text-sm text-navy-600 mt-1">Todos os dados são salvos localmente no seu navegador. Exporte regularmente para garantir backup em caso de limpeza do navegador.</p>
+          </div>
+        </div>
+      `;
+    }
+
+    // ===== MODAL FUNCTIONS =====
+    function showModal(content) {
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onclick="closeModal(event)">
+          <div class="bg-white rounded-2xl shadow-xl max-w-md w-full max-h-[90%] overflow-auto" onclick="event.stopPropagation()">
+            ${content}
+          </div>
+        </div>
+      `;
+    }
+
+    function closeModal(event) {
+      if (event && event.target !== event.currentTarget) return;
+      document.getElementById('modal-container').innerHTML = '';
+    }
+
+    function showCreateProfileModal() {
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Criar Novo Perfil</h3>
+          <form onsubmit="createProfile(event)">
+            <div class="mb-4">
+              <label for="profile-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Perfil</label>
+              <input type="text" id="profile-name" required placeholder="Ex: João Silva" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Criar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function showCreateContestModal() {
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Novo Concurso</h3>
+          <form onsubmit="createContest(event)">
+            <div class="mb-4">
+              <label for="contest-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Concurso</label>
+              <input type="text" id="contest-name" required placeholder="Ex: Polícia Civil - RN" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="mb-4">
+              <label for="contest-org" class="block text-sm font-medium text-gray-700 mb-2">Órgão/Banca</label>
+              <input type="text" id="contest-org" placeholder="Ex: FGV" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Criar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function showAddTopicModal() {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const syllabus = contest?.syllabus || [];
+      
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Adicionar Tópico</h3>
+          <form onsubmit="addTopic(event)">
+            <div class="mb-4">
+              <label for="topic-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Tópico</label>
+              <input type="text" id="topic-name" required placeholder="Ex: Direito Constitucional" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="mb-4">
+              <label for="topic-parent" class="block text-sm font-medium text-gray-700 mb-2">Disciplina (opcional)</label>
+              <input type="text" id="topic-parent" placeholder="Ex: Direito" list="disciplines" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <datalist id="disciplines">
+                ${[...new Set(syllabus.map(s => s.parent).filter(Boolean))].map(d => `<option value="${d}">`).join('')}
+              </datalist>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label for="topic-priority" class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+                <select id="topic-priority" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                  <option value="low">Baixa</option>
+                  <option value="medium" selected>Média</option>
+                  <option value="high">Alta</option>
+                </select>
+              </div>
+              <div>
+                <label for="topic-weight" class="block text-sm font-medium text-gray-700 mb-2">Peso</label>
+                <input type="number" id="topic-weight" value="1" min="1" max="10" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Adicionar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function showAddQuestionsModal() {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const syllabus = contest?.syllabus || [];
+      
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Registrar Questões</h3>
+          <form onsubmit="addQuestions(event)">
+            <div class="mb-4">
+              <label for="questions-topic" class="block text-sm font-medium text-gray-700 mb-2">Tópico</label>
+              <select id="questions-topic" onchange="onQuestionsTopicChange(this.value)" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="">Geral</option>
+                ${syllabus.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}
+              </select>
+            </div>
+            <div class="mb-4">
+              <label class="block text-sm font-medium text-gray-700 mb-2">Subtópico (opcional)</label>
+              <select id="questions-subtopic" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="">Subtópico (opcional)</option>
+              </select>
+            </div>
+            <div class="mb-4">
+              <label for="questions-source" class="block text-sm font-medium text-gray-700 mb-2">Fonte</label>
+              <input type="text" id="questions-source" placeholder="Ex: QConcursos, Estratégia..." class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label for="questions-total" class="block text-sm font-medium text-gray-700 mb-2">Total de Questões</label>
+                <input type="number" id="questions-total" required min="1" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+              <div>
+                <label for="questions-correct" class="block text-sm font-medium text-gray-700 mb-2">Acertos</label>
+                <input type="number" id="questions-correct" required min="0" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Registrar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function showAddSimulationModal() {
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Novo Simulado</h3>
+          <form onsubmit="addSimulation(event)">
+            <div class="mb-4">
+              <label for="sim-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Simulado</label>
+              <input type="text" id="sim-name" required placeholder="Ex: Simulado PRF 01" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label for="sim-total" class="block text-sm font-medium text-gray-700 mb-2">Total de Questões</label>
+                <input type="number" id="sim-total" required min="1" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+              <div>
+                <label for="sim-correct" class="block text-sm font-medium text-gray-700 mb-2">Acertos</label>
+                <input type="number" id="sim-correct" required min="0" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Registrar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    // ===== ACTION FUNCTIONS =====
+    function createProfile(event) {
+      event.preventDefault();
+      const name = document.getElementById('profile-name').value.trim();
+      if (!name) return;
+      
+      const profile = {
+        id: generateId(),
+        name,
+        createdAt: new Date().toISOString(),
+        contests: [],
+        archivedContests: []
+      };
+      
+      state.profiles.push(profile);
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function selectProfile(id) {
+      state.currentProfile = id;
+      state.currentScreen = 'profileHome';
+      render();
+    }
+
+    function goToProfiles() {
+      state.currentScreen = 'profiles';
+      state.currentProfile = null;
+      state.currentContest = null;
+      render();
+    }
+
+    function goToProfileHome() {
+      state.currentScreen = 'profileHome';
+      state.currentContest = null;
+      render();
+    }
+
+    function deleteProfile(id) {
+      const profile = state.profiles.find(p => p.id === id);
+      if (!profile) return;
+      
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-2">Excluir Perfil?</h3>
+          <p class="text-gray-600 mb-4">Tem certeza que deseja excluir o perfil "${profile.name}"? Esta ação não pode ser desfeita.</p>
+          <div class="flex gap-3">
+            <button onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+            <button onclick="confirmDeleteProfile('${id}')" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium">Excluir</button>
+          </div>
+        </div>
+      `);
+    }
+
+    function confirmDeleteProfile(id) {
+      state.profiles = state.profiles.filter(p => p.id !== id);
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function createContest(event) {
+      event.preventDefault();
+      const name = document.getElementById('contest-name').value.trim();
+      const organization = document.getElementById('contest-org').value.trim();
+      if (!name) return;
+      
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return;
+      
+      const contest = {
+        id: generateId(),
+        name,
+        organization,
+        createdAt: new Date().toISOString(),
+        currentTab: 'dashboard',
+        syllabus: [],
+        sessions: [],
+        questions: [],
+        reviews: [],
+        simulations: [],
+        files: [],
+        trash: [],
+        plan: { mode: 'pre', weeklyGoal: 20, questionGoal: 100 },
+        reviewSettings: { intervals: [1, 7, 30] }
+      };
+      
+      profile.contests = profile.contests || [];
+      profile.contests.push(contest);
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function selectContest(id) {
+      state.currentContest = id;
+      state.currentScreen = 'contest';
+      render();
+    }
+
+    function archiveContest(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return;
+      
+      const contestIndex = profile.contests.findIndex(c => c.id === id);
+      if (contestIndex === -1) return;
+      
+      const contest = profile.contests.splice(contestIndex, 1)[0];
+      profile.archivedContests = profile.archivedContests || [];
+      profile.archivedContests.push(contest);
+      saveToStorage();
+      render();
+    }
+
+    function unarchiveContest(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return;
+      
+      const contestIndex = profile.archivedContests.findIndex(c => c.id === id);
+      if (contestIndex === -1) return;
+      
+      const contest = profile.archivedContests.splice(contestIndex, 1)[0];
+      profile.contests.push(contest);
+      saveToStorage();
+      render();
+    }
+
+    function switchTab(tab) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      contest.currentTab = tab;
+      saveToStorage();
+      render();
+    }
+
+    function addTopic(event) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      const topic = {
+        id: generateId(),
+        name: document.getElementById('topic-name').value.trim(),
+        parent: document.getElementById('topic-parent').value.trim() || null,
+        priority: document.getElementById('topic-priority').value,
+        weight: parseInt(document.getElementById('topic-weight').value) || 1,
+        status: 'pending',
+        questions: 0,
+        accuracy: 0,
+        timeSpent: 0,
+        lastStudied: null,
+        nextReview: null,
+        tags: '',
+        notes: ''
+      };
+      
+      contest.syllabus = contest.syllabus || [];
+      contest.syllabus.push(topic);
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function editTopic(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const topic = contest?.syllabus?.find(t => t.id === id);
+      if (!topic) return;
+      
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Editar Tópico</h3>
+          <form onsubmit="updateTopic(event, '${id}')">
+            <div class="mb-4">
+              <label for="edit-topic-name" class="block text-sm font-medium text-gray-700 mb-2">Nome</label>
+              <input type="text" id="edit-topic-name" required value="${topic.name}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="mb-4">
+              <label for="edit-topic-status" class="block text-sm font-medium text-gray-700 mb-2">Status</label>
+              <select id="edit-topic-status" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="pending" ${topic.status === 'pending' ? 'selected' : ''}>Pendente</option>
+                <option value="in_progress" ${topic.status === 'in_progress' ? 'selected' : ''}>Em Progresso</option>
+                <option value="completed" ${topic.status === 'completed' ? 'selected' : ''}>Concluído</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label for="edit-topic-priority" class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+                <select id="edit-topic-priority" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                  <option value="low" ${topic.priority === 'low' ? 'selected' : ''}>Baixa</option>
+                  <option value="medium" ${topic.priority === 'medium' ? 'selected' : ''}>Média</option>
+                  <option value="high" ${topic.priority === 'high' ? 'selected' : ''}>Alta</option>
+                </select>
+              </div>
+              <div>
+                <label for="edit-topic-weight" class="block text-sm font-medium text-gray-700 mb-2">Peso</label>
+                <input type="number" id="edit-topic-weight" value="${topic.weight}" min="1" max="10" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Salvar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function updateTopic(event, id) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const topic = contest?.syllabus?.find(t => t.id === id);
+      if (!topic) return;
+      
+      topic.name = document.getElementById('edit-topic-name').value.trim();
+      topic.status = document.getElementById('edit-topic-status').value;
+      topic.priority = document.getElementById('edit-topic-priority').value;
+      topic.weight = parseInt(document.getElementById('edit-topic-weight').value) || 1;
+      
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function deleteTopic(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      const topicIndex = contest.syllabus?.findIndex(t => t.id === id);
+      if (topicIndex === -1) return;
+      
+      const topic = contest.syllabus.splice(topicIndex, 1)[0];
+      contest.trash = contest.trash || [];
+      contest.trash.push({ ...topic, deletedAt: new Date().toISOString() });
+      
+      saveToStorage();
+      render();
+    }
+
+    function addQuestions(event) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+
+      const topicId = document.getElementById('questions-topic').value;
+      const subtopicId = document.getElementById('questions-subtopic') ? (document.getElementById('questions-subtopic').value || null) : null;
+      const topic = contest.syllabus?.find(t => t.id === topicId);
+
+      const questionBlock = {
+        id: generateId(),
+        topicId: topicId || null,
+        topicName: topic?.name || 'Geral',
+        subtopicId,
+        subtopicName: subtopicId ? ((topic?.subtopics || []).find(st => st.id === subtopicId)?.name || null) : null,
+        source: document.getElementById('questions-source').value.trim(),
+        total: parseInt(document.getElementById('questions-total').value) || 0,
+        correct: parseInt(document.getElementById('questions-correct').value) || 0,
+        date: new Date().toISOString()
+      };
+
+      contest.questions = contest.questions || [];
+      contest.questions.push(questionBlock);
+
+      // Update stats (topic + subtópico)
+      if (topicId) {
+        if (subtopicId) {
+          updateSubtopicStats(contest, topicId, subtopicId);
+        }
+        updateTopicAggregates(contest, topicId);
+      }
+
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function deleteQuestionBlock(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      contest.questions = contest.questions?.filter(q => q.id !== id) || [];
+      saveToStorage();
+      render();
+    }
+
+    function addSimulation(event) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      const total = parseInt(document.getElementById('sim-total').value) || 0;
+      const correct = parseInt(document.getElementById('sim-correct').value) || 0;
+      
+      const simulation = {
+        id: generateId(),
+        name: document.getElementById('sim-name').value.trim(),
+        total,
+        correct,
+        score: total > 0 ? Math.round((correct / total) * 100) : 0,
+        date: new Date().toISOString()
+      };
+      
+      contest.simulations = contest.simulations || [];
+      contest.simulations.push(simulation);
+      
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+    function completeReview(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const review = contest?.reviews?.find(r => r.id === id);
+      if (!review) return;
+      
+      review.completed = true;
+      review.completedAt = new Date().toISOString();
+      syncNextReviews(contest);
+      
+      saveToStorage();
+      render();
+    }
+
+    function postponeReview(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      const review = contest?.reviews?.find(r => r.id === id);
+      if (!review) return;
+      
+      const newDate = new Date(review.dueDate);
+      newDate.setDate(newDate.getDate() + 1);
+      review.dueDate = newDate.toISOString();
+      syncNextReviews(contest);
+      
+      saveToStorage();
+      render();
+    }
+
+    function setPlanMode(mode) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      contest.plan = contest.plan || {};
+      contest.plan.mode = mode;
+      
+      saveToStorage();
+      render();
+    }
+
+    function updatePlanGoal(key, value) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+      
+      contest.plan = contest.plan || {};
+      contest.plan[key] = parseInt(value) || 0;
+      
+      saveToStorage();
+    }
+
+    // Timer functions (drift-free; accurate even when switching tabs)
+    function getTimerElapsedSeconds() {
+      if (state.timerRunning && state.timerStartEpoch) {
+        const live = Math.floor((Date.now() - state.timerStartEpoch) / 1000);
+        return state.timerAccumulatedSeconds + Math.max(0, live);
+      }
+      return state.timerAccumulatedSeconds;
+    }
+
+    function updateTimerDisplay() {
+      state.timerSeconds = getTimerElapsedSeconds();
+      const display = document.getElementById('timer-display');
+      if (display) display.textContent = formatTime(state.timerSeconds);
+    }
+
+    function startTimer() {
+      if (state.timerRunning) return;
+      state.timerRunning = true;
+      state.timerStartEpoch = Date.now();
+      // Use a short tick; elapsed time is computed from timestamps so it won't drift when the tab is inactive
+      state.timerInterval = setInterval(updateTimerDisplay, 250);
+      updateTimerDisplay();
+      render();
+    }
+
+    function pauseTimer() {
+      if (!state.timerRunning) return;
+      state.timerAccumulatedSeconds = getTimerElapsedSeconds();
+      state.timerRunning = false;
+      state.timerStartEpoch = null;
+      clearInterval(state.timerInterval);
+      updateTimerDisplay();
+      render();
+    }
+
+    function stopTimer() {
+      const elapsed = getTimerElapsedSeconds();
+      if (elapsed === 0) return;
+
+      pauseTimer();
+
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest) return;
+
+      const topicSelect = document.getElementById('session-topic');
+      const subtopicSelect = document.getElementById('session-subtopic');
+      const typeSelect = document.getElementById('session-type');
+      const topicId = topicSelect?.value || null;
+      const subtopicId = subtopicSelect?.value || null;
+      const topic = contest.syllabus?.find(t => t.id === topicId);
+      const subtopic = (topic && subtopicId) ? (topic.subtopics || []).find(st => st.id === subtopicId) : null;
+
+      const session = {
+        id: generateId(),
+        topicId,
+        topicName: topic?.name || 'Sem tópico',
+        subtopicId,
+        subtopicName: subtopic?.name || null,
+        type: typeSelect?.value || 'theory',
+        duration: elapsed,
+        date: new Date().toISOString()
+      };
+
+      contest.sessions = contest.sessions || [];
+      contest.sessions.unshift(session);
+
+      // Update topic time (stored in minutes)
+      if (topic) {
+        topic.timeSpent = (topic.timeSpent || 0) + Math.round(elapsed / 60);
+        topic.lastStudied = new Date().toISOString();
+
+        // Update subtópico time (stored in minutes)
+        if (subtopic) {
+          subtopic.timeSpent = (subtopic.timeSpent || 0) + Math.round(elapsed / 60);
+          subtopic.lastStudied = new Date().toISOString();
+        }
+
+        // Create review if theory study
+        if (typeSelect?.value === 'theory') {
+          const intervals = contest.reviewSettings?.intervals || [1, 7, 30];
+          const reviewDate = new Date();
+          reviewDate.setDate(reviewDate.getDate() + intervals[0]);
+
+          createManualReview(contest, topicId, subtopic ? subtopic.id : null, reviewDate.toISOString());
+        }
+      }
+
+      state.timerSeconds = 0;
+      state.timerAccumulatedSeconds = 0;
+      state.timerStartEpoch = null;
+      state.sessionPrefill = { topicId: null, subtopicId: null };
+      saveToStorage();
+      render();
+    }
+
+    // Keep timer display accurate when switching tabs/windows
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        updateTimerDisplay();
+      }
+    });
+
+
+// ===== Subtópicos (Edital Verticalizado) =====
+function openTopicDetails(topicId) {
+  state.currentSyllabusTopicId = topicId;
+  saveToStorage();
+  render();
+}
+
+function backToSyllabusList() {
+  state.currentSyllabusTopicId = null;
+  saveToStorage();
+  render();
+}
+
+function showAddSubtopicModal(topicId) {
+  const contest = getCurrentContest();
+  const topic = getTopicById(contest, topicId);
+  if (!contest || !topic) return;
+
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Adicionar Subtópico</h3>
+      <form onsubmit="addSubtopic(event, '${topicId}')">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-2">Nome do Subtópico</label>
+          <input type="text" id="subtopic-name" required class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Status</label>
+            <select id="subtopic-status" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="pending">Pendente</option>
+              <option value="in_progress">Em Progresso</option>
+              <option value="completed">Concluído</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+            <select id="subtopic-priority" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="low">Baixa</option>
+              <option value="medium" selected>Média</option>
+              <option value="high">Alta</option>
+            </select>
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2 mt-6">
+          <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+          <button type="submit" class="px-5 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Adicionar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function addSubtopic(event, topicId) {
+  event.preventDefault();
+  const contest = getCurrentContest();
+  const topic = getTopicById(contest, topicId);
+  if (!contest || !topic) return;
+  topic.subtopics = topic.subtopics || [];
+
+  topic.subtopics.push({
+    id: generateId(),
+    name: document.getElementById('subtopic-name').value.trim(),
+    status: document.getElementById('subtopic-status').value,
+    priority: document.getElementById('subtopic-priority').value,
+    weight: 1,
+    questions: 0,
+    accuracy: 0,
+    timeSpent: 0,
+    lastStudied: null,
+    nextReview: null,
+    tags: '',
+    notes: ''
+  });
+
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+function editSubtopic(topicId, subtopicId) {
+  const contest = getCurrentContest();
+  const topic = getTopicById(contest, topicId);
+  const sub = getSubtopicById(topic, subtopicId);
+  if (!contest || !topic || !sub) return;
+
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Editar Subtópico</h3>
+      <form onsubmit="updateSubtopic(event, '${topicId}', '${subtopicId}')">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-2">Nome</label>
+          <input type="text" id="edit-subtopic-name" required value="${sub.name}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Status</label>
+            <select id="edit-subtopic-status" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="pending" ${sub.status === 'pending' ? 'selected' : ''}>Pendente</option>
+              <option value="in_progress" ${sub.status === 'in_progress' ? 'selected' : ''}>Em Progresso</option>
+              <option value="completed" ${sub.status === 'completed' ? 'selected' : ''}>Concluído</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+            <select id="edit-subtopic-priority" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="low" ${sub.priority === 'low' ? 'selected' : ''}>Baixa</option>
+              <option value="medium" ${sub.priority === 'medium' ? 'selected' : ''}>Média</option>
+              <option value="high" ${sub.priority === 'high' ? 'selected' : ''}>Alta</option>
+            </select>
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2 mt-6">
+          <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+          <button type="submit" class="px-5 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Salvar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function updateSubtopic(event, topicId, subtopicId) {
+  event.preventDefault();
+  const contest = getCurrentContest();
+  const topic = getTopicById(contest, topicId);
+  const sub = getSubtopicById(topic, subtopicId);
+  if (!contest || !topic || !sub) return;
+
+  sub.name = document.getElementById('edit-subtopic-name').value.trim();
+  sub.status = document.getElementById('edit-subtopic-status').value;
+  sub.priority = document.getElementById('edit-subtopic-priority').value;
+
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+function deleteSubtopic(topicId, subtopicId) {
+  const contest = getCurrentContest();
+  const topic = getTopicById(contest, topicId);
+  if (!contest || !topic) return;
+  topic.subtopics = topic.subtopics || [];
+  topic.subtopics = topic.subtopics.filter(st => st.id !== subtopicId);
+  saveToStorage();
+  render();
+}
+
+function promptManualReview(topicId, subtopicId) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Agendar Revisão</h3>
+      <form onsubmit="createReviewFromModal(event, '${topicId}', '${subtopicId || ''}')">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-2">Data da revisão</label>
+          <input type="date" id="manual-review-date" value="${date.toISOString().slice(0,10)}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="flex items-center justify-end gap-2 mt-6">
+          <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+          <button type="submit" class="px-5 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Agendar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function createReviewFromModal(event, topicId, subtopicId) {
+  event.preventDefault();
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const dateStr = document.getElementById('manual-review-date').value;
+  const due = new Date(dateStr + 'T12:00:00');
+  createManualReview(contest, topicId, subtopicId || null, due.toISOString());
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+// ===== Cronograma Semanal (Plano & Ciclo) =====
+function addScheduleItem(dayIndex) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const syllabus = contest.syllabus || [];
+  contest.plan = contest.plan || { mode: 'pre', weeklyGoal: 20, questionGoal: 100 };
+  // Separate weekly schedules for Pré-Edital and Pós-Edital
+  contest.plan.schedules = contest.plan.schedules || {
+    pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
+    post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
+  };
+  const mode = contest.plan.mode || 'pre';
+  const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
+
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Adicionar ao Cronograma (${['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'][dayIndex]})</h3>
+      <form onsubmit="saveScheduleItem(event, ${dayIndex})">
+        <div class="grid grid-cols-1 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Tópico</label>
+            <select id="schedule-topic" onchange="onScheduleTopicChange(this.value)" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="">Selecione</option>
+              ${syllabus.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Subtópico (opcional)</label>
+            <select id="schedule-subtopic" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="">—</option>
+            </select>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Tipo</label>
+              <select id="schedule-type" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="theory">Teoria</option>
+                <option value="questions">Questões</option>
+                <option value="review">Revisão</option>
+                <option value="video">Videoaula</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Questões (meta)</label>
+              <input type="number" id="schedule-questions" min="0" placeholder="Ex.: 30" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Tempo (min) (meta)</label>
+            <input type="number" id="schedule-minutes" min="0" placeholder="Ex.: 50" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Observações</label>
+            <input type="text" id="schedule-notes" placeholder="Ex.: Lei seca + 20 questões" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2 mt-6">
+          <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+          <button type="submit" class="px-5 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Adicionar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveScheduleItem(event, dayIndex) {
+  event.preventDefault();
+  const contest = getCurrentContest();
+  if (!contest) return;
+  contest.plan = contest.plan || {};
+  contest.plan.schedules = contest.plan.schedules || {
+    pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
+    post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
+  };
+  const mode = contest.plan.mode || 'pre';
+  const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
+
+  const topicId = document.getElementById('schedule-topic').value || null;
+  const topic = getTopicById(contest, topicId);
+  const subtopicId = document.getElementById('schedule-subtopic').value || null;
+  const sub = subtopicId ? getSubtopicById(topic, subtopicId) : null;
+
+  schedule[dayIndex] = schedule[dayIndex] || [];
+  schedule[dayIndex].push({
+    id: generateId(),
+    topicId,
+    topicName: topic?.name || null,
+    subtopicId: sub ? sub.id : null,
+    subtopicName: sub ? sub.name : null,
+    type: document.getElementById('schedule-type').value,
+    questionsTarget: parseInt(document.getElementById('schedule-questions').value) || 0,
+    minutesTarget: parseInt(document.getElementById('schedule-minutes').value) || 0,
+    notes: document.getElementById('schedule-notes').value.trim() || ''
+  });
+
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+function deleteScheduleItem(dayIndex, itemId) {
+  const contest = getCurrentContest();
+  if (!contest?.plan?.schedules) return;
+  const mode = contest.plan.mode || 'pre';
+  const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
+  schedule[dayIndex] = (schedule[dayIndex] || []).filter(i => i.id !== itemId);
+  saveToStorage();
+  render();
+}
+
+// ===== Dynamic dependent selects (Sessions / Questions / Schedule) =====
+function onSessionTopicChange(topicId) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const topic = getTopicById(contest, topicId);
+  const subSelect = document.getElementById('session-subtopic');
+  if (!subSelect) return;
+  subSelect.innerHTML = '<option value="">Subtópico (opcional)</option>' + (topic?.subtopics || []).map(st => {
+    const sel = (state.sessionPrefill.subtopicId === st.id) ? 'selected' : '';
+    return `<option value="${st.id}" ${sel}>${st.name}</option>`;
+  }).join('');
+}
+
+function onScheduleTopicChange(topicId) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const topic = getTopicById(contest, topicId);
+  const subSelect = document.getElementById('schedule-subtopic');
+  if (!subSelect) return;
+  subSelect.innerHTML = '<option value="">—</option>' + (topic?.subtopics || []).map(st => `<option value="${st.id}">${st.name}</option>`).join('');
+}
+
+function onQuestionsTopicChange(topicId) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const topic = getTopicById(contest, topicId);
+  const subSelect = document.getElementById('questions-subtopic');
+  if (!subSelect) return;
+  subSelect.innerHTML = '<option value="">Subtópico (opcional)</option>' + (topic?.subtopics || []).map(st => `<option value="${st.id}">${st.name}</option>`).join('');
+}
+
+    // Export/Import functions
+    function exportAllData() {
+      const data = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        profiles: state.profiles
+      };
+      
+      downloadJSON(data, `aprova-policial-backup-${new Date().toISOString().split('T')[0]}.json`);
+    }
+
+    function exportProfile(id) {
+      const profile = state.profiles.find(p => p.id === id);
+      if (!profile) return;
+      
+      const data = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        type: 'profile',
+        profile
+      };
+      
+      downloadJSON(data, `perfil-${profile.name.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.json`);
+    }
+
+    function exportContest(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === id);
+      if (!contest) return;
+      
+      const data = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        type: 'contest',
+        contest
+      };
+      
+      downloadJSON(data, `concurso-${contest.name.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.json`);
+    }
+
+    function downloadJSON(data, filename) {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function importData() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = JSON.parse(event.target.result);
+            
+            if (data.profiles) {
+              // Full backup
+              state.profiles = data.profiles;
+            } else if (data.type === 'profile' && data.profile) {
+              // Single profile
+              data.profile.id = generateId(); // Generate new ID to avoid conflicts
+              state.profiles.push(data.profile);
+            } else if (data.type === 'contest' && data.contest && state.currentProfile) {
+              // Single contest
+              const profile = state.profiles.find(p => p.id === state.currentProfile);
+              if (profile) {
+                data.contest.id = generateId();
+                profile.contests = profile.contests || [];
+                profile.contests.push(data.contest);
+              }
+            }
+            
+            saveToStorage();
+            render();
+            
+            showModal(`
+              <div class="p-6 text-center">
+                <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
+                  ${icons.check}
+                </div>
+                <h3 class="text-lg font-bold text-navy-900 mb-2">Importação Concluída!</h3>
+                <p class="text-gray-600 mb-4">Os dados foram importados com sucesso.</p>
+                <button onclick="closeModal()" class="px-6 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">OK</button>
+              </div>
+            `);
+          } catch (error) {
+            showModal(`
+              <div class="p-6 text-center">
+                <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600">
+                  ${icons.x}
+                </div>
+                <h3 class="text-lg font-bold text-navy-900 mb-2">Erro na Importação</h3>
+                <p class="text-gray-600 mb-4">O arquivo não é um JSON válido ou está corrompido.</p>
+                <button onclick="closeModal()" class="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Fechar</button>
+              </div>
+            `);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+
+    function restoreFromTrash(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === state.currentContest);
+      if (!contest || !contest.trash) return;
+      
+      const itemIndex = contest.trash.findIndex(t => t.id === id);
+      if (itemIndex === -1) return;
+      
+      const item = contest.trash.splice(itemIndex, 1)[0];
+      delete item.deletedAt;
+      contest.syllabus = contest.syllabus || [];
+      contest.syllabus.push(item);
+      
+      saveToStorage();
+      render();
+    }
+
+    // ===== EVENT LISTENERS =====
+    function attachEventListeners() {
+      // Keep selects in sync after every render (without changing UI)
+      try {
+        if (state.currentScreen === 'contest') {
+          const contest = getCurrentContest();
+          const currentTab = contest?.currentTab || 'dashboard';
+          if (currentTab === 'sessions') {
+            applySessionPrefillIfAny();
+          }
+        }
+      } catch (e) {
+        // silent
+      }
+    }
+
+    // ===== ELEMENT SDK INIT =====
+    function onConfigChange(newConfig) {
+      // Update title
+      const titleEl = document.getElementById('app-title');
+      if (titleEl) titleEl.textContent = newConfig.app_title || defaultConfig.app_title;
+      
+      // Update welcome message
+      const welcomeEl = document.getElementById('welcome-msg');
+      if (welcomeEl) welcomeEl.textContent = newConfig.welcome_message || defaultConfig.welcome_message;
+    }
+
+    // Initialize
+    if (window.elementSdk) {
+      window.elementSdk.init({
+        defaultConfig,
+        onConfigChange: async (cfg) => {
+          config = { ...defaultConfig, ...cfg };
+          onConfigChange(config);
+        },
+        mapToCapabilities: (cfg) => ({
+          recolorables: [
+            {
+              get: () => cfg.primary_color || defaultConfig.primary_color,
+              set: (v) => { cfg.primary_color = v; window.elementSdk.setConfig({ primary_color: v }); }
+            },
+            {
+              get: () => cfg.secondary_color || defaultConfig.secondary_color,
+              set: (v) => { cfg.secondary_color = v; window.elementSdk.setConfig({ secondary_color: v }); }
+            },
+            {
+              get: () => cfg.background_color || defaultConfig.background_color,
+              set: (v) => { cfg.background_color = v; window.elementSdk.setConfig({ background_color: v }); }
+            },
+            {
+              get: () => cfg.text_color || defaultConfig.text_color,
+              set: (v) => { cfg.text_color = v; window.elementSdk.setConfig({ text_color: v }); }
+            },
+            {
+              get: () => cfg.accent_color || defaultConfig.accent_color,
+              set: (v) => { cfg.accent_color = v; window.elementSdk.setConfig({ accent_color: v }); }
+            }
+          ],
+          borderables: [],
+          fontEditable: {
+            get: () => cfg.font_family || defaultConfig.font_family,
+            set: (v) => { cfg.font_family = v; window.elementSdk.setConfig({ font_family: v }); }
+          },
+          fontSizeable: {
+            get: () => cfg.font_size || defaultConfig.font_size,
+            set: (v) => { cfg.font_size = v; window.elementSdk.setConfig({ font_size: v }); }
+          }
+        }),
+        mapToEditPanelValues: (cfg) => new Map([
+          ['app_title', cfg.app_title || defaultConfig.app_title],
+          ['welcome_message', cfg.welcome_message || defaultConfig.welcome_message]
+        ])
+      });
+    }
+
+    // Load data and render
+    loadFromStorage();
+    render();
+  </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9cf1569dd435f61f',t:'MTc3MTI4OTkyNy4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
