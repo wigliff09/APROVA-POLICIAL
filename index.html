@@ -64,6 +64,39 @@
     ::-webkit-scrollbar-track { background: #f1f5f9; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    :root {
+      --app-accent-50: #e6f6ff;
+      --app-accent-100: #bae3ff;
+      --app-accent-400: #2186eb;
+      --app-accent-500: #0967d2;
+      --app-accent-600: #0552b5;
+      --app-accent-700: #03449e;
+    }
+    body .bg-accent-50 { background-color: var(--app-accent-50) !important; }
+    body .bg-accent-100 { background-color: var(--app-accent-100) !important; }
+    body .bg-accent-400 { background-color: var(--app-accent-400) !important; }
+    body .bg-accent-500 { background-color: var(--app-accent-500) !important; }
+    body .bg-accent-600 { background-color: var(--app-accent-600) !important; }
+    body .bg-accent-700 { background-color: var(--app-accent-700) !important; }
+    body .text-accent-600 { color: var(--app-accent-600) !important; }
+    body .text-accent-500 { color: var(--app-accent-500) !important; }
+    body .border-accent-500 { border-color: var(--app-accent-500) !important; }
+    body .ring-accent-500 { --tw-ring-color: var(--app-accent-500) !important; }
+    body .from-accent-500 { --tw-gradient-from: var(--app-accent-500) var(--tw-gradient-from-position) !important; --tw-gradient-to: rgb(255 255 255 / 0) var(--tw-gradient-to-position) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+    body .to-accent-400 { --tw-gradient-to: var(--app-accent-400) var(--tw-gradient-to-position) !important; }
+    body .hover\:bg-accent-700:hover { background-color: var(--app-accent-700) !important; }
+    body.theme-dark { background: #0b1220 !important; color: #e5e7eb !important; }
+    body.theme-dark .bg-gray-50 { background-color: #0b1220 !important; }
+    body.theme-dark .bg-white { background-color: #111827 !important; }
+    body.theme-dark .bg-gray-100 { background-color: #1f2937 !important; }
+    body.theme-dark .bg-gray-200 { background-color: #334155 !important; }
+    body.theme-dark .border-gray-100, body.theme-dark .border-gray-200, body.theme-dark .border-navy-100 { border-color: #334155 !important; }
+    body.theme-dark .text-navy-900, body.theme-dark .text-navy-700 { color: #f8fafc !important; }
+    body.theme-dark .text-gray-500, body.theme-dark .text-gray-600, body.theme-dark .text-gray-700, body.theme-dark .text-gray-400 { color: #94a3b8 !important; }
+    body.theme-dark .bg-navy-50 { background-color: #111827 !important; }
+    body.theme-dark .shadow-sm, body.theme-dark .shadow-lg, body.theme-dark .shadow-xl { box-shadow: 0 8px 25px rgba(0,0,0,0.35) !important; }
+
   </style>
 </head>
 <body class="h-full bg-gray-50 font-inter">
@@ -79,6 +112,9 @@
       currentContest: null,
       currentSyllabusTopicId: null, // for Edital > Tópico details
       sessionPrefill: { topicId: null, subtopicId: null },
+      currentSyllabusTemplateId: null,
+      currentSyllabusArea: null,
+      profileSyllabusLibraryOpen: false,
       profiles: [],
       // Timer state (duration stored in seconds)
       timerRunning: false,
@@ -172,6 +208,7 @@ function updateSubtopicStats(contest, topicId, subtopicId) {
 }
 
 
+
 function recomputeTopicNextReview(topic) {
   if (!topic) return;
   const dates = [];
@@ -186,11 +223,11 @@ function recomputeTopicNextReview(topic) {
     .filter(o => !Number.isNaN(o.t))
     .sort((a,b) => a.t - b.t)[0]?.iso;
   topic.nextReview = minIso || topic.nextReview || null;
+}
 
 function syncNextReviews(contest) {
   if (!contest) return;
   const syllabus = contest.syllabus || [];
-  // reset
   syllabus.forEach(t => {
     t.nextReview = null;
     (t.subtopics || []).forEach(st => { st.nextReview = null; });
@@ -212,6 +249,404 @@ function syncNextReviews(contest) {
 
   syllabus.forEach(t => recomputeTopicNextReview(t));
 }
+
+function getWeekRange(weekOffset = 0) {
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0,0,0,0);
+  start.setDate(start.getDate() - start.getDay() + (weekOffset * 7));
+  const end = new Date(start);
+  end.setDate(end.getDate() + 7);
+  return { start, end };
+}
+
+function isDateInRange(dateLike, start, end) {
+  const d = new Date(dateLike);
+  return d >= start && d < end;
+}
+
+function getContestReportView(contest) {
+  contest.reportView = contest.reportView || { mode: 'pre', weekOffset: 0 };
+  if (!['pre','post'].includes(contest.reportView.mode)) contest.reportView.mode = 'pre';
+  if (typeof contest.reportView.weekOffset !== 'number') contest.reportView.weekOffset = 0;
+  return contest.reportView;
+}
+
+function setReportMode(mode) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getContestReportView(contest);
+  view.mode = mode === 'post' ? 'post' : 'pre';
+  saveToStorage();
+  render();
+}
+
+function changeReportWeek(delta) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getContestReportView(contest);
+  view.weekOffset += delta;
+  saveToStorage();
+  render();
+}
+
+function resetReportWeek() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getContestReportView(contest);
+  view.weekOffset = 0;
+  saveToStorage();
+  render();
+}
+
+
+function toISODateOnly(dateLike) {
+  const d = new Date(dateLike);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getDateFromISODateOnly(iso) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+function formatMonthYear(dateLike) {
+  return new Date(dateLike).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }).replace(/^./, c => c.toUpperCase());
+}
+
+function getReportViewState(contest) {
+  contest.reportView = contest.reportView || {};
+  const view = contest.reportView;
+  if (!['week', 'month', 'custom'].includes(view.periodType)) view.periodType = 'week';
+  if (typeof view.weekOffset !== 'number') view.weekOffset = 0;
+  if (typeof view.monthOffset !== 'number') view.monthOffset = 0;
+  if (!view.customStart) view.customStart = toISODateOnly(new Date());
+  if (!view.customEnd) view.customEnd = toISODateOnly(new Date());
+  return view;
+}
+
+function getReportRange(contest) {
+  const view = getReportViewState(contest);
+  if (view.periodType === 'month') {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth() + view.monthOffset, 1);
+    start.setHours(0,0,0,0);
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+    return { start, end, label: formatMonthYear(start), calendarDate: start };
+  }
+  if (view.periodType === 'custom') {
+    let start = getDateFromISODateOnly(view.customStart) || new Date();
+    let endBase = getDateFromISODateOnly(view.customEnd) || start;
+    start.setHours(0,0,0,0);
+    endBase.setHours(0,0,0,0);
+    if (endBase < start) {
+      const tmp = start;
+      start = endBase;
+      endBase = tmp;
+    }
+    const end = new Date(endBase);
+    end.setDate(end.getDate() + 1);
+    return { start, end, label: `${formatDate(start)} — ${formatDate(endBase)}`, calendarDate: start };
+  }
+  const range = getWeekRange(view.weekOffset || 0);
+  const endDisplay = new Date(range.end.getTime() - 86400000);
+  return { start: range.start, end: range.end, label: `${formatDate(range.start)} — ${formatDate(endDisplay)}`, calendarDate: range.start };
+}
+
+function setReportPeriodType(type) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getReportViewState(contest);
+  view.periodType = ['week','month','custom'].includes(type) ? type : 'week';
+  saveToStorage();
+  render();
+}
+
+function changeReportPeriod(delta) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getReportViewState(contest);
+  if (view.periodType === 'month') {
+    view.monthOffset += delta;
+  } else if (view.periodType === 'custom') {
+    const start = getDateFromISODateOnly(view.customStart) || new Date();
+    const end = getDateFromISODateOnly(view.customEnd) || start;
+    const days = Math.max(1, Math.round((end - start) / 86400000) + 1);
+    start.setDate(start.getDate() + (delta * days));
+    end.setDate(end.getDate() + (delta * days));
+    view.customStart = toISODateOnly(start);
+    view.customEnd = toISODateOnly(end);
+  } else {
+    view.weekOffset += delta;
+  }
+  saveToStorage();
+  render();
+}
+
+function resetReportPeriod() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getReportViewState(contest);
+  view.weekOffset = 0;
+  view.monthOffset = 0;
+  const today = toISODateOnly(new Date());
+  view.customStart = today;
+  view.customEnd = today;
+  saveToStorage();
+  render();
+}
+
+function applyReportCustomRange() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const view = getReportViewState(contest);
+  const start = document.getElementById('report-custom-start')?.value;
+  const end = document.getElementById('report-custom-end')?.value;
+  if (!start || !end) {
+    alert('Selecione a data inicial e a data final.');
+    return;
+  }
+  view.periodType = 'custom';
+  view.customStart = start;
+  view.customEnd = end;
+  saveToStorage();
+  render();
+}
+
+function showReportDayDetails(dateIso) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const mode = getActiveContestMode(contest);
+  const sessions = (contest.sessions || []).filter(s => (s.planMode || 'pre') === mode && toISODateOnly(s.date) === dateIso);
+  const questions = (contest.questions || []).filter(q => (q.planMode || 'pre') === mode && toISODateOnly(q.date) === dateIso);
+  const totalSeconds = sessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const totalQuestions = questions.reduce((acc, q) => acc + (q.total || 0), 0);
+  const correctQuestions = questions.reduce((acc, q) => acc + (q.correct || 0), 0);
+  const accuracy = totalQuestions > 0 ? Math.round((correctQuestions / totalQuestions) * 100) : 0;
+  const dateObj = getDateFromISODateOnly(dateIso) || new Date(dateIso);
+
+  showModal(`
+    <div class="p-6 max-w-2xl">
+      <div class="flex items-start justify-between gap-3 mb-5">
+        <div>
+          <h3 class="text-2xl font-bold text-navy-900">${formatDate(dateObj)}</h3>
+          <p class="text-sm text-gray-500 mt-1">Detalhamento das atividades do dia</p>
+        </div>
+        <button onclick="closeModal()" class="p-2 text-gray-400 hover:text-gray-600 rounded-lg">${icons.x}</button>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <div class="bg-gray-50 rounded-xl border border-gray-100 p-3">
+          <p class="text-xs text-gray-500">Sessões</p>
+          <p class="text-xl font-bold text-navy-900">${sessions.length}</p>
+        </div>
+        <div class="bg-gray-50 rounded-xl border border-gray-100 p-3">
+          <p class="text-xs text-gray-500">Tempo</p>
+          <p class="text-xl font-bold text-navy-900">${formatTime(totalSeconds)}</p>
+        </div>
+        <div class="bg-gray-50 rounded-xl border border-gray-100 p-3">
+          <p class="text-xs text-gray-500">Questões</p>
+          <p class="text-xl font-bold text-navy-900">${totalQuestions}</p>
+        </div>
+        <div class="bg-gray-50 rounded-xl border border-gray-100 p-3">
+          <p class="text-xs text-gray-500">Acerto</p>
+          <p class="text-xl font-bold ${accuracy >= 70 ? 'text-green-600' : accuracy >= 50 ? 'text-amber-600' : 'text-red-600'}">${accuracy}%</p>
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        ${sessions.length === 0 && questions.length === 0 ? `
+          <div class="text-center py-8 text-gray-500">Nenhuma atividade registrada neste dia.</div>
+        ` : ''}
+
+        ${sessions.map(s => `
+          <div class="border border-gray-100 rounded-xl p-4 bg-white">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="w-3 h-3 rounded-full bg-green-500"></span>
+                  <p class="font-semibold text-navy-900 truncate">${s.topicName || 'Sem tópico'}</p>
+                </div>
+                <p class="text-sm text-gray-600">${s.subtopicName ? s.subtopicName : 'Sem subtópico informado'}</p>
+                <p class="text-xs text-gray-400 mt-2">Tipo: ${s.type === 'questions' ? 'Questões' : s.type === 'review' ? 'Revisão' : s.type === 'video' ? 'Videoaula' : 'Teoria'}</p>
+              </div>
+              <div class="text-right whitespace-nowrap">
+                <p class="text-sm text-gray-500">${new Date(s.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+                <p class="font-semibold text-navy-900">${formatTime(s.duration || 0)}</p>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+
+        ${questions.map(q => {
+          const qAcc = (q.total || 0) > 0 ? Math.round(((q.correct || 0) / (q.total || 0)) * 100) : 0;
+          return `
+            <div class="border border-gray-100 rounded-xl p-4 bg-gray-50">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="w-3 h-3 rounded-full bg-accent-500"></span>
+                    <p class="font-semibold text-navy-900 truncate">${q.topicName || 'Questões'}</p>
+                  </div>
+                  <p class="text-sm text-gray-600">${q.subtopicName ? q.subtopicName : (q.source || 'Bloco de questões')}</p>
+                  <p class="text-xs text-gray-400 mt-2">${q.correct || 0}/${q.total || 0} acertos</p>
+                </div>
+                <div class="text-right whitespace-nowrap">
+                  <p class="text-sm text-gray-500">${new Date(q.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+                  <p class="font-semibold ${qAcc >= 70 ? 'text-green-600' : qAcc >= 50 ? 'text-amber-600' : 'text-red-600'}">${qAcc}%</p>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `);
+}
+
+function hexToRgb(hex) {
+  const raw = hex.replace('#','');
+  const full = raw.length === 3 ? raw.split('').map(c => c+c).join('') : raw;
+  const num = parseInt(full, 16);
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+function rgba(hex, alpha) {
+  const {r,g,b} = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function describeArc(cx, cy, r, startAngle, endAngle) {
+  const rad = Math.PI / 180;
+  const start = {
+    x: cx + r * Math.cos((startAngle - 90) * rad),
+    y: cy + r * Math.sin((startAngle - 90) * rad)
+  };
+  const end = {
+    x: cx + r * Math.cos((endAngle - 90) * rad),
+    y: cy + r * Math.sin((endAngle - 90) * rad)
+  };
+  const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+  return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
+}
+
+function renderPieChartSvg(data, title, emptyText) {
+  const palette = ['#0967d2','#7c3aed','#059669','#d97706','#dc2626','#0891b2','#84cc16','#f43f5e'];
+  if (!data || data.length === 0) {
+    return `<div class="text-center py-10 text-gray-500">${emptyText}</div>`;
+  }
+  const total = data.reduce((acc, item) => acc + item.value, 0);
+  let currentAngle = 0;
+  const slices = data.map((item, idx) => {
+    const angle = total > 0 ? (item.value / total) * 360 : 0;
+    const path = describeArc(80, 80, 70, currentAngle, currentAngle + angle);
+    const color = palette[idx % palette.length];
+    currentAngle += angle;
+    return `<path d="${path}" fill="${color}" opacity="0.95"></path>`;
+  }).join('');
+
+  return `
+    <div class="grid grid-cols-1 md:grid-cols-[170px,1fr] gap-4 items-center">
+      <div class="flex items-center justify-center">
+        <svg width="160" height="160" viewBox="0 0 160 160" role="img" aria-label="${title}">
+          ${slices}
+          <circle cx="80" cy="80" r="34" fill="white"></circle>
+          <text x="80" y="76" text-anchor="middle" class="fill-slate-700" font-size="12" font-weight="600">Total</text>
+          <text x="80" y="94" text-anchor="middle" class="fill-slate-900" font-size="13" font-weight="700">${data.length}</text>
+        </svg>
+      </div>
+      <div class="space-y-2">
+        ${data.map((item, idx) => {
+          const color = palette[idx % palette.length];
+          const pct = total > 0 ? Math.round((item.value / total) * 100) : 0;
+          return `
+            <div class="flex items-center justify-between gap-3 text-sm">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="w-3 h-3 rounded-full" style="background:${color}"></span>
+                <span class="text-navy-700 truncate">${item.label}</span>
+              </div>
+              <div class="text-right whitespace-nowrap">
+                <span class="font-medium text-navy-900">${item.display || item.value}</span>
+                <span class="text-gray-400 ml-1">(${pct}%)</span>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderMiniBarChart(data) {
+  if (!data || data.length === 0) {
+    return `<div class="text-center py-10 text-gray-500">Sem sessões registradas nesta semana.</div>`;
+  }
+  const max = Math.max(...data.map(d => d.value), 1);
+  return `
+    <div class="h-52 flex items-end justify-around gap-2 px-2">
+      ${data.map(item => `
+        <div class="flex flex-col items-center gap-2 flex-1">
+          <div class="w-full max-w-[38px] bg-accent-500 rounded-t" style="height:${Math.max(8, Math.round((item.value / max) * 150))}px"></div>
+          <span class="text-[11px] text-gray-500">${item.label}</span>
+          <span class="text-[11px] text-gray-400">${formatTime(item.value)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+
+function getActiveAppearance() {
+  const profile = state.profiles.find(p => p.id === state.currentProfile);
+  const appearance = profile?.appearance || {};
+  return {
+    accent: appearance.accent || 'blue'
+  };
+}
+
+
+
+function applyCurrentAppearance() {
+  const appearance = getActiveAppearance();
+  const body = document.body;
+  body.classList.remove('accent-blue', 'accent-indigo', 'accent-green', 'accent-red');
+  body.classList.add(`accent-${appearance.accent || 'blue'}`);
+  const palettes = {
+    blue:  {50:'#e6f6ff',100:'#bae3ff',400:'#2186eb',500:'#0967d2',600:'#0552b5',700:'#03449e'},
+    indigo:{50:'#eef2ff',100:'#c7d2fe',400:'#6366f1',500:'#4f46e5',600:'#4338ca',700:'#3730a3'},
+    green: {50:'#ecfdf5',100:'#d1fae5',400:'#34d399',500:'#059669',600:'#047857',700:'#065f46'},
+    red:   {50:'#fef2f2',100:'#fee2e2',400:'#f87171',500:'#dc2626',600:'#b91c1c',700:'#991b1b'}
+  };
+  const p = palettes[appearance.accent || 'blue'] || palettes.blue;
+  body.style.setProperty('--app-accent-50', p[50]);
+  body.style.setProperty('--app-accent-100', p[100]);
+  body.style.setProperty('--app-accent-400', p[400]);
+  body.style.setProperty('--app-accent-500', p[500]);
+  body.style.setProperty('--app-accent-600', p[600]);
+  body.style.setProperty('--app-accent-700', p[700]);
+}
+
+
+
+function getActiveContestMode(contest) {
+  return contest?.activeMode || contest?.plan?.mode || 'pre';
+}
+
+function setActiveContestMode(mode) {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const normalized = mode === 'post' ? 'post' : 'pre';
+  contest.activeMode = normalized;
+  contest.plan = contest.plan || {};
+  contest.plan.mode = normalized;
+  saveToStorage();
+  render();
 }
 
 function setSessionPrefill(topicId, subtopicId) {
@@ -251,6 +686,94 @@ function updateSessionSubtopicOptions() {
   } else {
     subSelect.value = '';
   }
+}
+
+
+function updateManualSessionSubtopicOptions() {
+  const contest = getCurrentContest();
+  if (!contest) return;
+  const topicSelect = document.getElementById('manual-session-topic');
+  const subSelect = document.getElementById('manual-session-subtopic');
+  if (!topicSelect || !subSelect) return;
+
+  const topicId = topicSelect.value || '';
+  const topic = (contest.syllabus || []).find(t => t.id === topicId);
+  const subs = topic ? (topic.subtopics || []) : [];
+
+  const currentVal = subSelect.value;
+  subSelect.innerHTML = `<option value="">Subtópico (opcional)</option>` + subs.map(st => `<option value="${st.id}">${st.name}</option>`).join('');
+
+  if (currentVal && subs.some(st => st.id === currentVal)) {
+    subSelect.value = currentVal;
+  } else {
+    subSelect.value = '';
+  }
+}
+
+function saveManualSession() {
+  const profile = state.profiles.find(p => p.id === state.currentProfile);
+  const contest = profile?.contests?.find(c => c.id === state.currentContest);
+  if (!contest) return;
+
+  const topicSelect = document.getElementById('manual-session-topic');
+  const subtopicSelect = document.getElementById('manual-session-subtopic');
+  const typeSelect = document.getElementById('manual-session-type');
+  const hoursInput = document.getElementById('manual-session-hours');
+  const minutesInput = document.getElementById('manual-session-minutes');
+  const secondsInput = document.getElementById('manual-session-seconds');
+
+  const topicId = topicSelect?.value || null;
+  const subtopicId = subtopicSelect?.value || null;
+  const hours = parseInt(hoursInput?.value || '0', 10) || 0;
+  const minutes = parseInt(minutesInput?.value || '0', 10) || 0;
+  const seconds = parseInt(secondsInput?.value || '0', 10) || 0;
+
+  const totalSeconds = Math.max(0, (hours * 3600) + (minutes * 60) + seconds);
+  if (!topicId || totalSeconds <= 0) {
+    alert('Selecione um tópico e informe um tempo maior que zero.');
+    return;
+  }
+
+  const topic = contest.syllabus?.find(t => t.id === topicId);
+  const subtopic = (topic && subtopicId) ? (topic.subtopics || []).find(st => st.id === subtopicId) : null;
+
+  const session = {
+    id: generateId(),
+    topicId,
+    topicName: topic?.name || 'Sem tópico',
+    subtopicId,
+    subtopicName: subtopic?.name || null,
+    type: typeSelect?.value || 'theory',
+    duration: totalSeconds,
+    date: new Date().toISOString(),
+    planMode: getActiveContestMode(contest),
+    manualEntry: true
+  };
+
+  contest.sessions = contest.sessions || [];
+  contest.sessions.unshift(session);
+
+  if (topic) {
+    topic.timeSpent = (topic.timeSpent || 0) + Math.round(totalSeconds / 60);
+    topic.lastStudied = new Date().toISOString();
+
+    if (subtopic) {
+      subtopic.timeSpent = (subtopic.timeSpent || 0) + Math.round(totalSeconds / 60);
+      subtopic.lastStudied = new Date().toISOString();
+    }
+
+    if ((typeSelect?.value || 'theory') === 'theory') {
+      const intervals = contest.reviewSettings?.intervals || [1, 7, 30];
+      const reviewDate = new Date();
+      reviewDate.setDate(reviewDate.getDate() + intervals[0]);
+      createManualReview(contest, topicId, subtopic ? subtopic.id : null, reviewDate.toISOString());
+    }
+  }
+
+  if (subtopicId) updateSubtopicStats(contest, topicId, subtopicId);
+  updateTopicAggregates(contest, topicId);
+  saveToStorage();
+  render();
 }
 
 function applySessionPrefillIfAny() {
@@ -360,6 +883,7 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
       }
       
       attachEventListeners();
+      applyCurrentAppearance();
     }
 
     function renderProfilesScreen() {
@@ -510,6 +1034,10 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
       const contests = profile.contests || [];
       const archivedContests = profile.archivedContests || [];
 
+      if (state.profileSyllabusLibraryOpen) {
+        return renderSyllabusLibrary();
+      }
+
       return `
         <div class="min-h-full" style="background: ${config.background_color}">
           <!-- Header -->
@@ -529,6 +1057,10 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
                   </div>
                 </div>
                 <div class="flex gap-2">
+                  <button onclick="showAppearanceModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
+                    ${icons.edit}
+                    <span>Personalização</span>
+                  </button>
                   <button onclick="exportProfile('${profile.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
                     ${icons.download}
                     <span>Exportar Perfil</span>
@@ -596,6 +1128,9 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
                             ${icons.target}
                           </div>
                           <div class="flex gap-1">
+                            <button onclick="event.stopPropagation(); showEditContestModal('${contest.id}')" class="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-gray-50 rounded transition" title="Editar">
+                              ${icons.edit}
+                            </button>
                             <button onclick="event.stopPropagation(); archiveContest('${contest.id}')" class="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded transition" title="Arquivar">
                               ${icons.archive}
                             </button>
@@ -605,7 +1140,7 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
                           </div>
                         </div>
                         <h4 class="font-semibold text-navy-900 mb-1">${contest.name}</h4>
-                        <p class="text-sm text-gray-500 mb-3">${contest.organization || 'Sem órgão definido'}</p>
+                        <p class="text-sm text-gray-500 mb-3">${getContestArea(contest)} • ${contest.organization || 'Sem órgão definido'}</p>
                         <div class="flex items-center justify-between text-sm">
                           <span class="text-gray-500">${progress}% concluído</span>
                           <span class="text-accent-600 font-medium">${contest.syllabus?.length || 0} tópicos</span>
@@ -617,6 +1152,51 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
               </div>
             `}
 
+            <!-- Syllabus Templates Library -->
+            <div class="flex items-center justify-between mb-4 mt-2">
+              <div>
+                <h3 class="text-lg font-semibold text-navy-900">Banco de Editais</h3>
+                <p class="text-sm text-gray-500">Modelos prontos de editais para importar nos seus concursos ativos.</p>
+              </div>
+              <button onclick="openSyllabusLibraryHome()" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+                ${icons.folder}
+                <span>Abrir Banco de Editais</span>
+              </button>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-8">
+              ${getSyllabusTemplates().length === 0 ? `
+                <div class="text-center py-6">
+                  <div class="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    ${icons.book}
+                  </div>
+                  <h4 class="font-medium text-navy-900 mb-1">Nenhum edital cadastrado</h4>
+                  <p class="text-sm text-gray-500 mb-3">Cadastre modelos de concursos para reutilizar com os alunos.</p>
+                  <button onclick="openSyllabusLibraryHome()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                    ${icons.plus}
+                    <span>Criar primeiro modelo</span>
+                  </button>
+                </div>
+              ` : `
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  ${getSyllabusTemplates().slice(0, 6).map(t => `
+                    <div class="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                      <div class="flex items-start justify-between gap-3 mb-3">
+                        <div class="min-w-0">
+                          <h4 class="font-semibold text-navy-900 truncate">${t.name}</h4>
+                          <p class="text-sm text-gray-500 truncate">${getTemplateArea(t)} • ${t.organization || 'Concurso-modelo'}</p>
+                        </div>
+                        <span class="text-xs px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500">${(t.topics || []).length} mat.</span>
+                      </div>
+                      <div class="flex items-center justify-between text-sm text-gray-500">
+                        <span>${countTemplateSubtopics(t)} subtópicos</span>
+                        <button onclick="openSyllabusLibraryHome('${t.id}')" class="text-accent-600 font-medium hover:underline">Abrir</button>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+
             ${archivedContests.length > 0 ? `
               <h3 class="text-lg font-semibold text-navy-900 mb-4">Concursos Arquivados</h3>
               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -626,7 +1206,10 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
                       <div class="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center text-gray-500">
                         ${icons.archive}
                       </div>
-                      <button onclick="unarchiveContest('${contest.id}')" class="text-sm text-accent-600 hover:underline">Desarquivar</button>
+                      <div class="flex gap-2">
+                        <button onclick="unarchiveContest('${contest.id}')" class="text-sm text-accent-600 hover:underline">Desarquivar</button>
+                        <button onclick="deleteArchivedContest('${contest.id}')" class="text-sm text-red-600 hover:underline">Excluir</button>
+                      </div>
                     </div>
                     <h4 class="font-semibold text-gray-700">${contest.name}</h4>
                     <p class="text-sm text-gray-500">${contest.organization || 'Sem órgão'}</p>
@@ -641,101 +1224,88 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
       `;
     }
 
-    function renderContestScreen() {
+    
+
+function renderContestScreen() {
       const profile = state.profiles.find(p => p.id === state.currentProfile);
       const contest = profile?.contests?.find(c => c.id === state.currentContest);
       if (!profile || !contest) return '';
 
       const currentTab = contest.currentTab || 'dashboard';
+      const collapsed = !!contest.ui?.sidebarCollapsed;
+      const activeMode = getActiveContestMode(contest);
+
+      const navItem = (tab, icon, label) => `
+        <li>
+          <button onclick="switchTab('${tab}')" title="${label}" class="sidebar-link w-full flex items-center ${collapsed ? 'justify-center' : 'gap-3'} px-3 py-2.5 rounded-lg text-left ${currentTab === tab ? 'active' : 'text-navy-300 hover:text-white'}">
+            ${icon}
+            ${collapsed ? '' : `<span>${label}</span>`}
+          </button>
+        </li>
+      `;
 
       return `
         <div class="h-full flex" style="background: ${config.background_color}">
-          <!-- Sidebar -->
-          <aside class="w-64 bg-navy-900 text-white flex-shrink-0 flex flex-col">
+          <aside class="${collapsed ? 'w-20' : 'w-64'} bg-navy-900 text-white flex-shrink-0 flex flex-col transition-all duration-200">
             <div class="p-4 border-b border-navy-700">
-              <button onclick="goToProfileHome()" class="flex items-center gap-2 text-navy-300 hover:text-white transition mb-3 text-sm">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                <span>Voltar</span>
-              </button>
-              <h2 class="font-bold text-lg truncate">${contest.name}</h2>
-              <p class="text-navy-400 text-sm truncate">${contest.organization || 'Concurso'}</p>
+              <div class="flex items-center justify-between mb-3">
+                <button onclick="goToProfileHome()" class="flex items-center ${collapsed ? 'justify-center w-8' : 'gap-2'} text-navy-300 hover:text-white transition text-sm">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                  ${collapsed ? '' : '<span>Voltar</span>'}
+                </button>
+                <button onclick="toggleSidebar()" class="p-2 text-navy-300 hover:text-white hover:bg-white/10 rounded-lg transition" title="Ocultar menu">
+                  ${icons.menu}
+                </button>
+              </div>
+              ${collapsed
+                ? `<div class="text-center text-xs text-navy-400 font-semibold tracking-wide">${contest.name.charAt(0).toUpperCase()}</div>`
+                : `<h2 class="font-bold text-lg truncate">${contest.name}</h2><p class="text-navy-400 text-sm truncate">${contest.organization || 'Concurso'}</p>`
+              }
             </div>
-            
+
             <nav class="flex-1 py-4 overflow-y-auto">
               <ul class="space-y-1 px-3">
-                <li>
-                  <button onclick="switchTab('dashboard')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'dashboard' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.dashboard}
-                    <span>Dashboard</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('syllabus')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'syllabus' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.book}
-                    <span>Edital Verticalizado</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('plan')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'plan' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.calendar}
-                    <span>Plano & Ciclo</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('sessions')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'sessions' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.clock}
-                    <span>Sessões</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('questions')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'questions' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.question}
-                    <span>Questões & Erros</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('reviews')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'reviews' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.refresh}
-                    <span>Revisões</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('simulations')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'simulations' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.award}
-                    <span>Simulados</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('files')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'files' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.folder}
-                    <span>Arquivos</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('reports')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'reports' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.chart}
-                    <span>Relatórios</span>
-                  </button>
-                </li>
-                <li>
-                  <button onclick="switchTab('backup')" class="sidebar-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left ${currentTab === 'backup' ? 'active' : 'text-navy-300 hover:text-white'}">
-                    ${icons.shield}
-                    <span>Backup & Segurança</span>
-                  </button>
-                </li>
+                ${navItem('dashboard', icons.dashboard, 'Dashboard')}
+                ${navItem('syllabus', icons.book, 'Edital Verticalizado')}
+                ${navItem('plan', icons.calendar, 'Plano & Ciclo')}
+                ${navItem('sessions', icons.clock, 'Sessões')}
+                ${navItem('questions', icons.question, 'Questões & Erros')}
+                ${navItem('reviews', icons.refresh, 'Revisões')}
+                ${navItem('simulations', icons.award, 'Simulados')}
+                ${navItem('files', icons.folder, 'Arquivos')}
+                ${navItem('reports', icons.chart, 'Relatórios')}
+                ${navItem('backup', icons.shield, 'Backup & Segurança')}
               </ul>
             </nav>
 
-            <div class="p-4 border-t border-navy-700">
-              <div class="flex items-center gap-2 text-xs text-navy-400">
+            <div class="p-4 border-t border-navy-700 space-y-3">
+              <button onclick="showAppearanceModal()" title="Personalização" class="w-full flex items-center ${collapsed ? 'justify-center' : 'gap-2'} text-xs text-navy-300 hover:text-white transition">
+                ${icons.edit}
+                ${collapsed ? '' : '<span>Personalização</span>'}
+              </button>
+              <div class="flex items-center ${collapsed ? 'justify-center' : 'gap-2'} text-xs text-navy-400">
                 <div class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></div>
-                <span>Sistema Offline</span>
+                ${collapsed ? '' : '<span>Sistema Offline</span>'}
               </div>
             </div>
           </aside>
 
-          <!-- Main Content -->
           <main class="flex-1 overflow-auto">
+            <div class="bg-white border-b border-gray-100 px-6 py-3 flex items-center justify-between">
+              <div class="flex items-center gap-4 min-w-0">
+                <button onclick="toggleSidebar()" class="p-2 text-gray-500 hover:text-navy-900 hover:bg-gray-50 rounded-lg transition" title="Ocultar menu">
+                  ${icons.menu}
+                </button>
+                <div class="min-w-0">
+                  <h2 class="font-bold text-navy-900 truncate uppercase">${contest.name}</h2>
+                  <p class="text-sm text-gray-500">Período ativo: ${activeMode === 'post' ? 'Pós-edital' : 'Pré-edital'}</p>
+                </div>
+              </div>
+              <button onclick="showAppearanceModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition font-medium border border-gray-200">
+                ${icons.edit}
+                <span>Personalizar</span>
+              </button>
+            </div>
             ${renderTabContent(currentTab, contest)}
           </main>
         </div>
@@ -743,6 +1313,8 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
         <div id="modal-container"></div>
       `;
     }
+
+
 
     function renderTabContent(tab, contest) {
       switch(tab) {
@@ -907,6 +1479,293 @@ function createManualReview(contest, topicId, subtopicId, dueDateIso) {
     }
 
     
+
+function getCurrentProfile() {
+  return state.profiles.find(p => p.id === state.currentProfile) || null;
+}
+
+function getSyllabusTemplates() {
+  const profile = getCurrentProfile();
+  if (!profile) return [];
+  profile.syllabusTemplates = profile.syllabusTemplates || [];
+  return profile.syllabusTemplates;
+}
+
+function countTemplateSubtopics(template) {
+  return (template.topics || []).reduce((acc, topic) => acc + ((topic.subtopics || []).length), 0);
+}
+
+function normalizeAreaName(area) {
+  const value = (area || '').trim();
+  return value || 'Geral';
+}
+
+function getTemplateArea(template) {
+  return normalizeAreaName(template?.area || template?.careerArea || template?.category);
+}
+
+function getContestArea(contest) {
+  return normalizeAreaName(contest?.area || contest?.careerArea || contest?.category);
+}
+
+function getSyllabusTemplateAreas() {
+  const templates = getSyllabusTemplates();
+  const areas = [...new Set(templates.map(t => getTemplateArea(t)))];
+  return areas.sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function getDefaultContestAreas() {
+  return ['Policial', 'Tribunal', 'Saúde', 'Educação', 'Fiscal', 'Administrativa', 'Outros'];
+}
+
+function renderSyllabusLibrary() {
+  const templates = getSyllabusTemplates();
+  const selectedArea = state.currentSyllabusArea || null;
+  const areas = getSyllabusTemplateAreas();
+  const filteredTemplates = selectedArea ? templates.filter(t => getTemplateArea(t) === selectedArea) : templates;
+
+  if (selectedArea && !state.currentSyllabusTemplateId && filteredTemplates.length > 0) {
+    state.currentSyllabusTemplateId = filteredTemplates[0].id;
+  }
+
+  const selected = filteredTemplates.find(t => t.id === state.currentSyllabusTemplateId) || null;
+
+  if (!selectedArea) {
+    const areaCards = areas.length > 0 ? areas : getDefaultContestAreas();
+    return `
+      <div class="min-h-full" style="background: ${config.background_color}">
+        <header class="bg-gradient-to-r from-navy-900 to-navy-800 text-white shadow-lg">
+          <div class="max-w-6xl mx-auto px-6 py-6">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-4">
+                <button onclick="closeSyllabusLibrary()" class="p-2 hover:bg-white/10 rounded-lg transition">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                </button>
+                <div class="w-12 h-12 bg-accent-500 rounded-xl flex items-center justify-center text-white">
+                  ${icons.folder}
+                </div>
+                <div>
+                  <h1 class="text-xl font-bold">Banco de Editais</h1>
+                  <p class="text-navy-300 text-sm">Selecione uma área de concurso para visualizar os modelos disponíveis</p>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button onclick="importSyllabusTemplates()" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
+                  ${icons.upload}
+                  <span>Importar Banco</span>
+                </button>
+                <button onclick="exportSyllabusTemplates()" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
+                  ${icons.download}
+                  <span>Exportar Banco</span>
+                </button>
+                <button onclick="showCreateSyllabusTemplateModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition text-sm">
+                  ${icons.plus}
+                  <span>Novo Concurso-Modelo</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+        <main class="max-w-6xl mx-auto px-6 py-8">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            ${areaCards.map(area => {
+              const areaTemplates = templates.filter(t => getTemplateArea(t) === area);
+              const totalTopics = areaTemplates.reduce((acc, t) => acc + ((t.topics || []).length), 0);
+              const totalSubs = areaTemplates.reduce((acc, t) => acc + countTemplateSubtopics(t), 0);
+              return `
+                <button onclick="openSyllabusArea('${area.replace(/'/g, "\\'")}')" class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 text-left card-hover transition">
+                  <div class="flex items-start justify-between mb-4">
+                    <div class="w-11 h-11 bg-accent-100 rounded-xl flex items-center justify-center text-accent-600">
+                      ${icons.book}
+                    </div>
+                    <span class="text-xs px-2 py-1 rounded-full bg-gray-50 border border-gray-100 text-gray-500">${areaTemplates.length} modelos</span>
+                  </div>
+                  <h3 class="font-semibold text-navy-900 mb-1">${area}</h3>
+                  <p class="text-sm text-gray-500 mb-4">${totalTopics} matérias • ${totalSubs} subtópicos</p>
+                  <span class="text-sm text-accent-600 font-medium">Abrir área →</span>
+                </button>
+              `;
+            }).join('')}
+          </div>
+          ${templates.length === 0 ? `
+            <div class="mt-8 bg-white rounded-xl shadow-sm border border-gray-100 p-8 text-center">
+              <h4 class="font-medium text-navy-900 mb-2">Nenhum edital cadastrado ainda</h4>
+              <p class="text-sm text-gray-500 mb-4">Cadastre o primeiro concurso-modelo e defina a área dele, como Policial, Tribunal, Saúde ou outra.</p>
+              <button onclick="showCreateSyllabusTemplateModal()" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                ${icons.plus}
+                <span>Criar primeiro modelo</span>
+              </button>
+            </div>
+          ` : ''}
+        </main>
+        <div id="modal-container"></div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="p-6 fade-in">
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <button onclick="backToSyllabusAreas()" class="inline-flex items-center gap-2 px-3 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+            <span class="text-lg">←</span>
+            <span>Voltar às áreas</span>
+          </button>
+          <div>
+            <h1 class="text-2xl font-bold text-navy-900">Banco de Editais — ${selectedArea}</h1>
+            <p class="text-gray-500">Modelos prontos desta área para importar em concursos ativos</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="importSyllabusTemplates()" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+            ${icons.upload}
+            <span>Importar Banco</span>
+          </button>
+          <button onclick="exportSyllabusTemplates()" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+            ${icons.download}
+            <span>Exportar Banco</span>
+          </button>
+          <button onclick="showCreateSyllabusTemplateModal('${selectedArea.replace(/'/g, "\\'")}')" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+            ${icons.plus}
+            <span>Novo Concurso-Modelo</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-[360px,1fr] gap-6">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h3 class="font-semibold text-navy-900">Concursos cadastrados</h3>
+              <p class="text-xs text-gray-500">Área: ${selectedArea}</p>
+            </div>
+            <span class="text-sm text-gray-500">${filteredTemplates.length}</span>
+          </div>
+          ${filteredTemplates.length === 0 ? `
+            <div class="p-8 text-center">
+              <div class="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                ${icons.book}
+              </div>
+              <h4 class="font-medium text-navy-900 mb-2">Nenhum modelo nesta área</h4>
+              <p class="text-sm text-gray-500 mb-4">Cadastre concursos-modelo para a área ${selectedArea}.</p>
+              <button onclick="showCreateSyllabusTemplateModal('${selectedArea.replace(/'/g, "\\'")}')" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                ${icons.plus}
+                <span>Criar modelo</span>
+              </button>
+            </div>
+          ` : `
+            <div class="divide-y divide-gray-100 max-h-[620px] overflow-y-auto">
+              ${filteredTemplates.map(t => `
+                <button onclick="openSyllabusTemplate('${t.id}')" class="w-full text-left px-5 py-4 hover:bg-gray-50 transition ${selected?.id === t.id ? 'bg-accent-50' : ''}">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <p class="font-semibold text-navy-900 truncate">${t.name}</p>
+                      <p class="text-sm text-gray-500 truncate">${getTemplateArea(t)} • ${t.organization || 'Concurso-modelo'}</p>
+                    </div>
+                    <span class="text-xs px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500">${(t.topics || []).length} mat.</span>
+                  </div>
+                  <div class="mt-3 flex items-center gap-4 text-xs text-gray-500">
+                    <span>${countTemplateSubtopics(t)} tópicos/subtópicos</span>
+                    <span>${t.createdAt ? formatDate(t.createdAt) : 'sem data'}</span>
+                  </div>
+                </button>
+              `).join('')}
+            </div>
+          `}
+        </div>
+
+        <div>
+          ${!selected ? `
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+              <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                ${icons.folder}
+              </div>
+              <h4 class="text-lg font-medium text-navy-900 mb-2">Selecione um concurso-modelo</h4>
+              <p class="text-gray-500">Ao selecionar, você verá a prévia das matérias e poderá importar tudo para um concurso ativo.</p>
+            </div>
+          ` : `
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+              <div class="p-5 border-b border-gray-100">
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                      <span class="text-xs px-2 py-1 rounded-full bg-accent-100 text-accent-600 font-medium">${getTemplateArea(selected)}</span>
+                    </div>
+                    <h3 class="text-xl font-bold text-navy-900">${selected.name}</h3>
+                    <p class="text-gray-500">${selected.organization || 'Modelo de edital verticalizado'}</p>
+                    <div class="mt-3 flex flex-wrap gap-2 text-xs text-gray-500">
+                      <span class="px-2 py-1 rounded-full bg-gray-100">${(selected.topics || []).length} matérias</span>
+                      <span class="px-2 py-1 rounded-full bg-gray-100">${countTemplateSubtopics(selected)} subtópicos</span>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-2 justify-end">
+                    <button onclick="showImportSyllabusTemplateModal('${selected.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                      ${icons.download}
+                      <span>Importar para meu concurso</span>
+                    </button>
+                    <button onclick="showAddTemplateTopicModal('${selected.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-white text-navy-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium border border-gray-200">
+                      ${icons.plus}
+                      <span>Adicionar matéria</span>
+                    </button>
+                    <button onclick="deleteSyllabusTemplate('${selected.id}')" class="inline-flex items-center gap-2 px-3 py-2 bg-white text-red-600 rounded-lg hover:bg-red-50 transition text-sm font-medium border border-red-100">
+                      ${icons.trash}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              ${(selected.topics || []).length === 0 ? `
+                <div class="p-12 text-center">
+                  <div class="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    ${icons.book}
+                  </div>
+                  <h4 class="font-medium text-navy-900 mb-2">Nenhuma matéria neste modelo</h4>
+                  <p class="text-sm text-gray-500 mb-4">Adicione matérias e subtópicos para formar o edital que será importado.</p>
+                  <button onclick="showAddTemplateTopicModal('${selected.id}')" class="inline-flex items-center gap-2 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition text-sm font-medium">
+                    ${icons.plus}
+                    <span>Adicionar matéria</span>
+                  </button>
+                </div>
+              ` : `
+                <div class="divide-y divide-gray-100">
+                  ${(selected.topics || []).map((topic, idx) => `
+                    <div class="p-5">
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-2 mb-2">
+                            <span class="inline-flex w-7 h-7 rounded-lg bg-navy-100 text-navy-700 items-center justify-center text-sm font-bold">${idx + 1}</span>
+                            <h4 class="font-bold text-navy-900 truncate">${topic.name}</h4>
+                          </div>
+                          ${topic.parent ? `<p class="text-sm text-gray-500 mb-2">${topic.parent}</p>` : ''}
+                        </div>
+                        <button onclick="deleteTemplateTopic('${selected.id}','${topic.id}')" class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="Excluir matéria">
+                          ${icons.trash}
+                        </button>
+                      </div>
+                      ${(topic.subtopics || []).length === 0 ? `
+                        <p class="text-sm text-gray-400 ml-9">Sem subtópicos cadastrados.</p>
+                      ` : `
+                        <div class="ml-9 mt-3 space-y-2">
+                          ${(topic.subtopics || []).map((st, stIdx) => `
+                            <div class="flex items-start gap-3 p-3 bg-gray-50 rounded-lg border border-gray-100">
+                              <span class="text-sm font-semibold text-gray-500 w-10">${idx + 1}.${stIdx + 1}</span>
+                              <p class="text-sm text-navy-700 flex-1">${st.name}</p>
+                            </div>
+                          `).join('')}
+                        </div>
+                      `}
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          `}
+        </div>
+      </div>
+      <div id="modal-container"></div>
+    </div>
+  `;
+}
 function renderSyllabus(contest) {
   const syllabus = contest.syllabus || [];
 
@@ -1144,8 +2003,9 @@ function renderSyllabus(contest) {
   `;
 }
 
+
 function renderPlan(contest) {
-  const plan = contest.plan || { mode: 'pre', weeklyGoal: 20, questionGoal: 100, schedules: {
+  const plan = contest.plan || { mode: getActiveContestMode(contest), weeklyGoal: 20, questionGoal: 100, schedules: {
     pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
     post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
   } };
@@ -1153,7 +2013,8 @@ function renderPlan(contest) {
     pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
     post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
   };
-  const activeSchedule = plan.schedules[plan.mode || 'pre'] || (plan.schedules[plan.mode || 'pre'] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
+  const activeMode = getActiveContestMode(contest);
+  const activeSchedule = plan.schedules[activeMode] || (plan.schedules[activeMode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
 
   const syllabus = contest.syllabus || [];
   const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -1195,22 +2056,35 @@ function renderPlan(contest) {
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- Mode Selection -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Período Ativo do Concurso</h3>
+          <p class="text-sm text-gray-500 mb-4">Defina se você está em pré-edital ou pós-edital. O sistema usa isso em relatórios e registros.</p>
+          <div class="flex gap-3">
+            <button onclick="setActiveContestMode('pre')" class="flex-1 p-4 rounded-xl border-2 transition ${activeMode === 'pre' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+              <div class="font-medium text-navy-900 mb-1">Pré-Edital</div>
+              <p class="text-sm text-gray-500">Base teórica e constância</p>
+            </button>
+            <button onclick="setActiveContestMode('post')" class="flex-1 p-4 rounded-xl border-2 transition ${activeMode === 'post' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+              <div class="font-medium text-navy-900 mb-1">Pós-Edital</div>
+              <p class="text-sm text-gray-500">Intensificação e prova</p>
+            </button>
+          </div>
+        </div>
+
         <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
           <h3 class="font-semibold text-navy-900 mb-4">Modo de Estudo</h3>
           <div class="flex gap-3">
-            <button onclick="setPlanMode('pre')" class="flex-1 p-4 rounded-xl border-2 transition ${plan.mode === 'pre' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+            <button onclick="setActiveContestMode('pre')" class="flex-1 p-4 rounded-xl border-2 transition ${activeMode === 'pre' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
               <div class="font-medium text-navy-900 mb-1">Pré-Edital</div>
               <p class="text-sm text-gray-500">Foco em base teórica e revisões</p>
             </button>
-            <button onclick="setPlanMode('post')" class="flex-1 p-4 rounded-xl border-2 transition ${plan.mode === 'post' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
+            <button onclick="setActiveContestMode('post')" class="flex-1 p-4 rounded-xl border-2 transition ${activeMode === 'post' ? 'border-accent-500 bg-accent-50' : 'border-gray-200 hover:border-gray-300'}">
               <div class="font-medium text-navy-900 mb-1">Pós-Edital</div>
               <p class="text-sm text-gray-500">Foco em questões e simulados</p>
             </button>
           </div>
         </div>
 
-        <!-- Goals -->
         <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
           <h3 class="font-semibold text-navy-900 mb-4">Metas Semanais</h3>
           <div class="space-y-4">
@@ -1225,7 +2099,6 @@ function renderPlan(contest) {
           </div>
         </div>
 
-        <!-- Weekly Schedule -->
         <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
           <div class="flex items-center justify-between mb-4">
             <h3 class="font-semibold text-navy-900">Cronograma Semanal</h3>
@@ -1249,10 +2122,11 @@ function renderPlan(contest) {
     </div>
   `;
 }
+
 function renderSessions(contest) {
       const sessions = contest.sessions || [];
       const syllabus = contest.syllabus || [];
-      
+
       return `
         <div class="p-6 fade-in">
           <div class="flex items-center justify-between mb-6">
@@ -1282,7 +2156,7 @@ function renderSessions(contest) {
                 </select>
               </div>
             </div>
-            
+
             <div class="text-center">
               <div class="text-6xl font-mono font-bold text-navy-900 mb-6" id="timer-display">${formatTime(state.timerSeconds)}</div>
               <div class="flex items-center justify-center gap-4">
@@ -1300,6 +2174,53 @@ function renderSessions(contest) {
                 <button onclick="stopTimer()" class="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-medium" ${state.timerSeconds === 0 ? 'disabled class="opacity-50"' : ''}>
                   ${icons.stop}
                   <span>Finalizar</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Manual Session Card -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+            <div class="flex items-center justify-between mb-6">
+              <div>
+                <h3 class="font-semibold text-navy-900">Adicionar sessão manual</h3>
+                <p class="text-sm text-gray-500 mt-1">Registre estudos feitos fora do cronômetro do sistema</p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+              <select id="manual-session-topic" onchange="updateManualSessionSubtopicOptions()" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="">Selecione o tópico...</option>
+                ${syllabus.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}
+              </select>
+              <select id="manual-session-subtopic" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="">Subtópico (opcional)</option>
+              </select>
+              <select id="manual-session-type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="theory">Teoria</option>
+                <option value="questions">Questões</option>
+                <option value="review">Revisão</option>
+                <option value="video">Videoaula</option>
+              </select>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 items-end">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Horas</label>
+                <input id="manual-session-hours" type="number" min="0" value="0" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Minutos</label>
+                <input id="manual-session-minutes" type="number" min="0" max="59" value="0" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Segundos</label>
+                <input id="manual-session-seconds" type="number" min="0" max="59" value="0" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              </div>
+              <div>
+                <button onclick="saveManualSession()" class="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium shadow-sm">
+                  ${icons.plus}
+                  <span>Salvar sessão manual</span>
                 </button>
               </div>
             </div>
@@ -1323,12 +2244,12 @@ function renderSessions(contest) {
                         ${icons.clock}
                       </div>
                       <div>
-                        <p class="font-medium text-navy-900">${session.topicName || 'Sem tópico'}</p>
+                        <p class="font-medium text-navy-900">${session.topicName || 'Sem tópico'}${session.subtopicName ? ` • ${session.subtopicName}` : ''}</p>
                         <p class="text-sm text-gray-500">${session.type === 'theory' ? 'Teoria' : session.type === 'questions' ? 'Questões' : session.type === 'review' ? 'Revisão' : 'Videoaula'} • ${formatDate(session.date)}</p>
                       </div>
                     </div>
                     <div class="text-right">
-                      <p class="font-medium text-navy-900">${Math.round(session.duration / 60)}min</p>
+                      <p class="font-medium text-navy-900">${formatTime(session.duration || 0)}</p>
                     </div>
                   </div>
                 `).join('')}
@@ -1605,106 +2526,311 @@ function renderSessions(contest) {
       `;
     }
 
-    function renderReports(contest) {
-      const sessions = contest.sessions || [];
-      const questions = contest.questions || [];
-      const syllabus = contest.syllabus || [];
-      
-      // Hours by discipline
-      const hoursByDiscipline = {};
-      sessions.forEach(s => {
-        const topic = syllabus.find(t => t.id === s.topicId);
-        const discipline = topic?.parent || topic?.name || 'Outros';
-        hoursByDiscipline[discipline] = (hoursByDiscipline[discipline] || 0) + (s.duration || 0);
-      });
-      
-      // Accuracy by topic
-      const accuracyByTopic = {};
-      questions.forEach(q => {
-        const topic = syllabus.find(t => t.id === q.topicId);
-        const name = topic?.name || 'Geral';
-        if (!accuracyByTopic[name]) {
-          accuracyByTopic[name] = { correct: 0, total: 0 };
-        }
-        accuracyByTopic[name].correct += q.correct;
-        accuracyByTopic[name].total += q.total;
-      });
-      
-      return `
-        <div class="p-6 fade-in">
-          <div class="mb-6">
-            <h1 class="text-2xl font-bold text-navy-900">Relatórios</h1>
-            <p class="text-gray-500">Análise detalhada do seu desempenho</p>
+    
+
+function renderReports(contest) {
+  const sessions = contest.sessions || [];
+  const questions = contest.questions || [];
+  const syllabus = contest.syllabus || [];
+  const view = getReportViewState(contest);
+  const range = getReportRange(contest);
+  const mode = getActiveContestMode(contest);
+
+  const periodSessions = sessions.filter(s => (s.planMode || 'pre') === mode && isDateInRange(s.date, range.start, range.end));
+  const periodQuestions = questions.filter(q => (q.planMode || 'pre') === mode && isDateInRange(q.date, range.start, range.end));
+
+  const hoursByDiscipline = {};
+  periodSessions.forEach(s => {
+    const topic = syllabus.find(t => t.id === s.topicId);
+    const discipline = topic?.parent || topic?.name || s.topicName || 'Outros';
+    hoursByDiscipline[discipline] = (hoursByDiscipline[discipline] || 0) + (s.duration || 0);
+  });
+
+  const accuracyByDiscipline = {};
+  periodQuestions.forEach(q => {
+    const topic = syllabus.find(t => t.id === q.topicId);
+    const discipline = topic?.parent || topic?.name || q.topicName || 'Geral';
+    if (!accuracyByDiscipline[discipline]) accuracyByDiscipline[discipline] = { correct: 0, total: 0 };
+    accuracyByDiscipline[discipline].correct += q.correct || 0;
+    accuracyByDiscipline[discipline].total += q.total || 0;
+  });
+
+  const periodSeconds = periodSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const periodQuestionsTotal = periodQuestions.reduce((acc, q) => acc + (q.total || 0), 0);
+  const periodQuestionsCorrect = periodQuestions.reduce((acc, q) => acc + (q.correct || 0), 0);
+  const periodAccuracy = periodQuestionsTotal > 0 ? Math.round((periodQuestionsCorrect / periodQuestionsTotal) * 100) : 0;
+
+  const timePieData = Object.entries(hoursByDiscipline)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([label, value]) => ({ label, value, display: formatTime(value) }));
+
+  const questionPieData = Object.entries(accuracyByDiscipline)
+    .filter(([, data]) => data.total > 0)
+    .sort((a,b) => b[1].total - a[1].total)
+    .slice(0, 8)
+    .map(([label, data]) => ({ label, value: data.total, display: `${Math.round((data.correct / data.total) * 100)}%` }));
+
+  const ranking = Object.entries(accuracyByDiscipline)
+    .filter(([, data]) => data.total > 0)
+    .map(([label, data]) => {
+      const accuracy = Math.round((data.correct / data.total) * 100);
+      const volumeFactor = Math.min(data.total / 10, 20);
+      return { label, accuracy, total: data.total, score: Number((accuracy + volumeFactor).toFixed(1)) };
+    })
+    .sort((a,b) => b.score - a.score);
+
+  const periodTopicIds = new Set([
+    ...periodSessions.map(s => s.topicId).filter(Boolean),
+    ...periodQuestions.map(q => q.topicId).filter(Boolean)
+  ]);
+  const criticalTopics = syllabus
+    .filter(t => periodTopicIds.has(t.id) || (t.questions || 0) > 0 || (t.accuracy || 0) > 0)
+    .filter(t => (t.accuracy || 0) < 60)
+    .sort((a,b) => (a.accuracy || 0) - (b.accuracy || 0))
+    .slice(0, 5);
+
+  const maxHours = Math.max(...Object.values(hoursByDiscipline), 1);
+  const periodLabel = view.periodType === 'month' ? 'no mês' : view.periodType === 'custom' ? 'no período' : 'na semana';
+  const previousLabel = view.periodType === 'month' ? '← Mês' : view.periodType === 'custom' ? '← Período' : '← Semana';
+  const nextLabel = view.periodType === 'month' ? 'Mês →' : view.periodType === 'custom' ? 'Período →' : 'Semana →';
+
+  const calendarBase = new Date(range.calendarDate);
+  const calendarStart = new Date(calendarBase.getFullYear(), calendarBase.getMonth(), 1);
+  const calendarEnd = new Date(calendarBase.getFullYear(), calendarBase.getMonth() + 1, 0);
+  const firstWeekday = calendarStart.getDay();
+  const daysInMonth = calendarEnd.getDate();
+  const todayIso = toISODateOnly(new Date());
+  const activityByDay = {};
+  const allModeSessions = sessions.filter(s => (s.planMode || 'pre') === mode);
+  const allModeQuestions = questions.filter(q => (q.planMode || 'pre') === mode);
+  allModeSessions.forEach(s => {
+    const iso = toISODateOnly(s.date);
+    if (!activityByDay[iso]) activityByDay[iso] = { sessions: 0, seconds: 0, questions: 0, correct: 0 };
+    activityByDay[iso].sessions += 1;
+    activityByDay[iso].seconds += s.duration || 0;
+  });
+  allModeQuestions.forEach(q => {
+    const iso = toISODateOnly(q.date);
+    if (!activityByDay[iso]) activityByDay[iso] = { sessions: 0, seconds: 0, questions: 0, correct: 0 };
+    activityByDay[iso].questions += q.total || 0;
+    activityByDay[iso].correct += q.correct || 0;
+  });
+  const calendarCells = [];
+  for (let i = 0; i < firstWeekday; i++) calendarCells.push(`<div class="min-h-[112px] bg-gray-50/60 border border-gray-100 rounded-lg"></div>`);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(calendarStart.getFullYear(), calendarStart.getMonth(), day);
+    const iso = toISODateOnly(d);
+    const activity = activityByDay[iso];
+    const inRange = d >= range.start && d < range.end;
+    const hasActivity = activity && (activity.sessions > 0 || activity.questions > 0 || activity.seconds > 0);
+    calendarCells.push(`
+      <button onclick="${hasActivity ? `showReportDayDetails('${iso}')` : ''}" class="min-h-[112px] text-left border rounded-lg p-3 transition ${inRange ? 'border-accent-200 bg-accent-50/40' : 'border-gray-100 bg-white'} ${hasActivity ? 'hover:shadow-md hover:border-accent-400 cursor-pointer' : 'cursor-default'} ${iso === todayIso ? 'ring-2 ring-accent-400' : ''}">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold ${iso === todayIso ? 'text-accent-600' : 'text-gray-600'}">${day}</span>
+          ${hasActivity ? '<span class="w-3 h-3 rounded-full bg-green-500"></span>' : ''}
+        </div>
+        ${hasActivity ? `
+          <div class="mt-4 space-y-1 text-xs text-navy-700">
+            <div class="flex items-center gap-1">${icons.book}<span>${activity.sessions} ativ.</span></div>
+            <div class="flex items-center gap-1">${icons.clock}<span>${formatTime(activity.seconds)}</span></div>
+            ${activity.questions > 0 ? `<div class="flex items-center gap-1">${icons.question}<span>${activity.questions} quest.</span></div>` : ''}
           </div>
+        ` : ''}
+      </button>
+    `);
+  }
 
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <!-- Hours by Discipline -->
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="font-semibold text-navy-900 mb-4">Horas por Disciplina</h3>
-              ${Object.keys(hoursByDiscipline).length === 0 ? `
-                <p class="text-gray-500 text-center py-8">Registre sessões de estudo para ver estatísticas.</p>
-              ` : `
-                <div class="space-y-3">
-                  ${Object.entries(hoursByDiscipline).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, seconds]) => `
-                    <div>
-                      <div class="flex justify-between text-sm mb-1">
-                        <span class="text-navy-700">${name}</span>
-                        <span class="text-gray-500">${formatTime(seconds)}</span>
-                      </div>
-                      <div class="h-2 bg-gray-100 rounded-full">
-                        <div class="h-full bg-accent-500 rounded-full" style="width: ${Math.min(seconds / Math.max(...Object.values(hoursByDiscipline)) * 100, 100)}%"></div>
-                      </div>
-                    </div>
-                  `).join('')}
-                </div>
-              `}
-            </div>
+  return `
+    <div class="p-6 fade-in">
+      <div class="mb-6 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-bold text-navy-900">Relatórios</h1>
+          <p class="text-gray-500">Análise detalhada do seu desempenho</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="setActiveContestMode('pre')" class="px-4 py-2 rounded-lg text-sm font-medium border ${mode === 'pre' ? 'bg-accent-600 text-white border-accent-600' : 'bg-white text-navy-700 border-gray-200 hover:bg-gray-50'}">Pré-edital</button>
+          <button onclick="setActiveContestMode('post')" class="px-4 py-2 rounded-lg text-sm font-medium border ${mode === 'post' ? 'bg-accent-600 text-white border-accent-600' : 'bg-white text-navy-700 border-gray-200 hover:bg-gray-50'}">Pós-edital</button>
+          <button onclick="setReportPeriodType('week')" class="px-4 py-2 rounded-lg text-sm font-medium border ${view.periodType === 'week' ? 'bg-navy-900 text-white border-navy-900' : 'bg-white text-navy-700 border-gray-200 hover:bg-gray-50'}">Semana</button>
+          <button onclick="setReportPeriodType('month')" class="px-4 py-2 rounded-lg text-sm font-medium border ${view.periodType === 'month' ? 'bg-navy-900 text-white border-navy-900' : 'bg-white text-navy-700 border-gray-200 hover:bg-gray-50'}">Mês</button>
+          <button onclick="setReportPeriodType('custom')" class="px-4 py-2 rounded-lg text-sm font-medium border ${view.periodType === 'custom' ? 'bg-navy-900 text-white border-navy-900' : 'bg-white text-navy-700 border-gray-200 hover:bg-gray-50'}">Período manual</button>
+        </div>
+      </div>
 
-            <!-- Accuracy by Topic -->
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="font-semibold text-navy-900 mb-4">% Acertos por Matéria</h3>
-              ${Object.keys(accuracyByTopic).length === 0 ? `
-                <p class="text-gray-500 text-center py-8">Registre questões para ver estatísticas.</p>
-              ` : `
-                <div class="space-y-3">
-                  ${Object.entries(accuracyByTopic).map(([name, data]) => {
-                    const accuracy = Math.round(data.correct / data.total * 100);
-                    return `
-                      <div>
-                        <div class="flex justify-between text-sm mb-1">
-                          <span class="text-navy-700">${name}</span>
-                          <span class="${accuracy >= 70 ? 'text-green-600' : accuracy >= 50 ? 'text-amber-600' : 'text-red-600'}">${accuracy}%</span>
-                        </div>
-                        <div class="h-2 bg-gray-100 rounded-full">
-                          <div class="h-full rounded-full ${accuracy >= 70 ? 'bg-green-500' : accuracy >= 50 ? 'bg-amber-500' : 'bg-red-500'}" style="width: ${accuracy}%"></div>
-                        </div>
-                      </div>
-                    `;
-                  }).join('')}
-                </div>
-              `}
-            </div>
-
-            <!-- Critical Topics -->
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
-              <h3 class="font-semibold text-navy-900 mb-4">Tópicos Críticos (Baixo Desempenho)</h3>
-              ${syllabus.filter(t => t.accuracy && t.accuracy < 60).length === 0 ? `
-                <p class="text-gray-500 text-center py-8">Nenhum tópico com baixo desempenho identificado.</p>
-              ` : `
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  ${syllabus.filter(t => t.accuracy && t.accuracy < 60).map(topic => `
-                    <div class="bg-red-50 border border-red-100 rounded-lg p-3">
-                      <p class="font-medium text-navy-900">${topic.name}</p>
-                      <p class="text-sm text-red-600">${topic.accuracy}% de acertos</p>
-                    </div>
-                  `).join('')}
-                </div>
-              `}
-            </div>
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <p class="text-sm text-gray-500">Período selecionado</p>
+            <h2 class="text-xl font-bold text-navy-900">${range.label}</h2>
+            <p class="text-xs text-gray-400 mt-1">Use semana, mês ou intervalo manual para analisar os dados.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="changeReportPeriod(-1)" class="px-4 py-2 rounded-lg text-sm font-medium bg-white text-navy-700 border border-gray-200 hover:bg-gray-50">${previousLabel}</button>
+            <button onclick="resetReportPeriod()" class="px-4 py-2 rounded-lg text-sm font-medium bg-white text-navy-700 border border-gray-200 hover:bg-gray-50">Hoje</button>
+            <button onclick="changeReportPeriod(1)" class="px-4 py-2 rounded-lg text-sm font-medium bg-white text-navy-700 border border-gray-200 hover:bg-gray-50">${nextLabel}</button>
           </div>
         </div>
-      `;
-    }
+        ${view.periodType === 'custom' ? `
+          <div class="grid grid-cols-1 md:grid-cols-[1fr,1fr,auto] gap-3 mt-4 pt-4 border-t border-gray-100">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Data inicial</label>
+              <input id="report-custom-start" type="date" value="${view.customStart}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Data final</label>
+              <input id="report-custom-end" type="date" value="${view.customEnd}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="flex items-end">
+              <button onclick="applyReportCustomRange()" class="w-full md:w-auto px-5 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Aplicar</button>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="font-semibold text-navy-900">Calendário mensal de atividades</h3>
+            <p class="text-sm text-gray-500">Clique em um dia com marca verde para ver o que foi estudado.</p>
+          </div>
+          <h3 class="font-bold text-navy-900">${formatMonthYear(calendarStart)}</h3>
+        </div>
+        <div class="grid grid-cols-7 gap-2 mb-2">
+          ${['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d => `<div class="text-sm font-semibold text-gray-500 px-2">${d}</div>`).join('')}
+        </div>
+        <div class="grid grid-cols-7 gap-2">
+          ${calendarCells.join('')}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <p class="text-sm text-gray-500">Horas ${periodLabel}</p>
+          <p class="text-2xl font-bold text-navy-900 mt-1">${formatTime(periodSeconds)}</p>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <p class="text-sm text-gray-500">Sessões ${periodLabel}</p>
+          <p class="text-2xl font-bold text-navy-900 mt-1">${periodSessions.length}</p>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <p class="text-sm text-gray-500">Questões ${periodLabel}</p>
+          <p class="text-2xl font-bold text-navy-900 mt-1">${periodQuestionsTotal}</p>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <p class="text-sm text-gray-500">Acerto médio</p>
+          <p class="text-2xl font-bold ${periodAccuracy >= 70 ? 'text-green-600' : periodAccuracy >= 50 ? 'text-amber-600' : 'text-red-600'} mt-1">${periodAccuracy}%</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Pizza • Tempo por Disciplina</h3>
+          ${renderPieChartSvg(timePieData, 'Tempo por disciplina', 'Sem sessões registradas neste período.')}
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Pizza • Questões por Matéria</h3>
+          ${renderPieChartSvg(questionPieData, 'Questões por matéria', 'Sem questões registradas neste período.')}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Horas por Disciplina</h3>
+          ${Object.keys(hoursByDiscipline).length === 0 ? `
+            <p class="text-gray-500 text-center py-8">Sem sessões registradas neste período.</p>
+          ` : `
+            <div class="space-y-3">
+              ${Object.entries(hoursByDiscipline).sort((a,b) => b[1] - a[1]).map(([name, value]) => `
+                <div>
+                  <div class="flex justify-between text-sm mb-1">
+                    <span class="text-navy-700">${name}</span>
+                    <span class="text-gray-500">${formatTime(value)}</span>
+                  </div>
+                  <div class="h-2 bg-gray-100 rounded-full">
+                    <div class="h-full bg-accent-500 rounded-full" style="width:${Math.max(8, Math.round((value / maxHours) * 100))}%"></div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">% Acertos por Matéria</h3>
+          ${Object.keys(accuracyByDiscipline).length === 0 ? `
+            <p class="text-gray-500 text-center py-8">Registre questões para ver estatísticas deste período.</p>
+          ` : `
+            <div class="space-y-3">
+              ${Object.entries(accuracyByDiscipline).map(([name, data]) => {
+                const accuracy = data.total > 0 ? Math.round((data.correct / data.total) * 100) : 0;
+                return `
+                  <div>
+                    <div class="flex justify-between text-sm mb-1">
+                      <span class="text-navy-700">${name}</span>
+                      <span class="${accuracy >= 70 ? 'text-green-600' : accuracy >= 50 ? 'text-amber-600' : 'text-red-600'}">${accuracy}%</span>
+                    </div>
+                    <div class="h-2 bg-gray-100 rounded-full">
+                      <div class="h-full rounded-full ${accuracy >= 70 ? 'bg-green-500' : accuracy >= 50 ? 'bg-amber-500' : 'bg-red-500'}" style="width:${Math.max(8, accuracy)}%"></div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Ranking de Desempenho por Disciplina</h3>
+          ${ranking.length === 0 ? `
+            <p class="text-gray-500 text-center py-8">Registre questões para montar o ranking.</p>
+          ` : `
+            <div class="space-y-3">
+              ${ranking.map((item, idx) => `
+                <div class="${idx === 0 ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-100'} border rounded-lg p-3 flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-full ${idx === 0 ? 'bg-amber-500 text-white' : idx === 1 ? 'bg-slate-400 text-white' : idx === 2 ? 'bg-orange-400 text-white' : 'bg-gray-200 text-gray-700'} flex items-center justify-center font-bold">${idx + 1}</div>
+                    <div class="min-w-0">
+                      <p class="font-medium text-navy-900 truncate">${item.label}</p>
+                      <p class="text-sm text-gray-500">${item.total} questões</p>
+                    </div>
+                  </div>
+                  <div class="text-right">
+                    <p class="${item.accuracy >= 70 ? 'text-green-600' : item.accuracy >= 50 ? 'text-amber-600' : 'text-red-600'} font-semibold">${item.accuracy}%</p>
+                    <p class="text-xs text-gray-400">score ${item.score}</p>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+          <h3 class="font-semibold text-navy-900 mb-4">Tópicos Críticos</h3>
+          ${criticalTopics.length === 0 ? `
+            <p class="text-gray-500 text-center py-8">Nenhum tópico crítico identificado.</p>
+          ` : `
+            <div class="space-y-3">
+              ${criticalTopics.map(topic => `
+                <div class="bg-red-50 border border-red-100 rounded-lg p-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <p class="font-medium text-navy-900">${topic.name}</p>
+                      <p class="text-sm text-gray-500">${topic.questions || 0} questões</p>
+                    </div>
+                    <div class="text-red-600 font-semibold">${topic.accuracy || 0}%</div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
 
     function renderBackup(contest) {
       const profile = state.profiles.find(p => p.id === state.currentProfile);
@@ -1798,7 +2924,12 @@ function renderSessions(contest) {
 
     // ===== MODAL FUNCTIONS =====
     function showModal(content) {
-      const container = document.getElementById('modal-container');
+      let container = document.getElementById('modal-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'modal-container';
+        document.body.appendChild(container);
+      }
       container.innerHTML = `
         <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onclick="closeModal(event)">
           <div class="bg-white rounded-2xl shadow-xl max-w-md w-full max-h-[90%] overflow-auto" onclick="event.stopPropagation()">
@@ -1810,7 +2941,8 @@ function renderSessions(contest) {
 
     function closeModal(event) {
       if (event && event.target !== event.currentTarget) return;
-      document.getElementById('modal-container').innerHTML = '';
+      const container = document.getElementById('modal-container');
+      if (container) container.innerHTML = '';
     }
 
     function showCreateProfileModal() {
@@ -1837,6 +2969,13 @@ function renderSessions(contest) {
           <h3 class="text-lg font-bold text-navy-900 mb-4">Novo Concurso</h3>
           <form onsubmit="createContest(event)">
             <div class="mb-4">
+              <label for="contest-area" class="block text-sm font-medium text-gray-700 mb-2">Área / eixo do concurso</label>
+              <input type="text" id="contest-area" required list="contest-area-options" placeholder="Ex.: Policial, Tribunal, Saúde, Fiscal" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <datalist id="contest-area-options">
+                ${[...new Set([...getDefaultContestAreas(), ...getSyllabusTemplateAreas()])].map(a => `<option value="${a}">`).join('')}
+              </datalist>
+            </div>
+            <div class="mb-4">
               <label for="contest-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Concurso</label>
               <input type="text" id="contest-name" required placeholder="Ex: Polícia Civil - RN" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
             </div>
@@ -1853,7 +2992,424 @@ function renderSessions(contest) {
       `);
     }
 
-    function showAddTopicModal() {
+
+
+    function showEditContestModal(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === id);
+      if (!contest) return;
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Editar Concurso</h3>
+          <form onsubmit="updateContest(event, '${id}')">
+            <div class="mb-4">
+              <label for="edit-contest-area" class="block text-sm font-medium text-gray-700 mb-2">Área / eixo do concurso</label>
+              <input type="text" id="edit-contest-area" required list="edit-contest-area-options" value="${(contest.area || 'Geral').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" placeholder="Ex.: Policial, Tribunal, Saúde, Fiscal" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <datalist id="edit-contest-area-options">
+                ${[...new Set([...getDefaultContestAreas(), ...getSyllabusTemplateAreas()])].map(a => `<option value="${a}">`).join('')}
+              </datalist>
+            </div>
+            <div class="mb-4">
+              <label for="edit-contest-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do Concurso</label>
+              <input type="text" id="edit-contest-name" required value="${(contest.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="mb-4">
+              <label for="edit-contest-org" class="block text-sm font-medium text-gray-700 mb-2">Órgão/Banca</label>
+              <input type="text" id="edit-contest-org" value="${(contest.organization || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" placeholder="Ex: FGV" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Salvar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+    function updateContest(event, id) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      const contest = profile?.contests?.find(c => c.id === id);
+      if (!contest) return;
+      const area = normalizeAreaName(document.getElementById('edit-contest-area')?.value || 'Geral');
+      const name = document.getElementById('edit-contest-name')?.value.trim();
+      const organization = document.getElementById('edit-contest-org')?.value.trim();
+      if (!name) return;
+      contest.area = area;
+      contest.name = name;
+      contest.organization = organization;
+      contest.updatedAt = new Date().toISOString();
+      saveToStorage();
+      closeModal();
+      render();
+    }
+    
+function openSyllabusLibraryHome(templateId = null) {
+  state.profileSyllabusLibraryOpen = true;
+  state.currentSyllabusTopicId = null;
+  const templates = getSyllabusTemplates();
+  const template = templateId ? templates.find(t => t.id === templateId) : null;
+  if (template) {
+    state.currentSyllabusArea = getTemplateArea(template);
+    state.currentSyllabusTemplateId = template.id;
+  } else {
+    state.currentSyllabusArea = null;
+    state.currentSyllabusTemplateId = null;
+  }
+  render();
+}
+
+function openSyllabusArea(area) {
+  state.profileSyllabusLibraryOpen = true;
+  state.currentSyllabusArea = normalizeAreaName(area);
+  const first = getSyllabusTemplates().find(t => getTemplateArea(t) === state.currentSyllabusArea);
+  state.currentSyllabusTemplateId = first ? first.id : null;
+  render();
+}
+
+function backToSyllabusAreas() {
+  state.currentSyllabusArea = null;
+  state.currentSyllabusTemplateId = null;
+  render();
+}
+
+function closeSyllabusLibrary() {
+  state.profileSyllabusLibraryOpen = false;
+  state.currentSyllabusTemplateId = null;
+  state.currentSyllabusArea = null;
+  render();
+}
+
+function openSyllabusTemplate(templateId) {
+  const template = getSyllabusTemplates().find(t => t.id === templateId);
+  if (template) state.currentSyllabusArea = getTemplateArea(template);
+  state.currentSyllabusTemplateId = templateId;
+  render();
+}
+
+function showCreateSyllabusTemplateModal(prefillArea = '') {
+  const areas = [...new Set([...getDefaultContestAreas(), ...getSyllabusTemplateAreas()])];
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Novo Concurso-Modelo</h3>
+      <form onsubmit="createSyllabusTemplate(event)">
+        <div class="mb-4">
+          <label for="template-area" class="block text-sm font-medium text-gray-700 mb-2">Área / eixo do edital</label>
+          <input type="text" id="template-area" required list="template-area-options" value="${prefillArea || ''}" placeholder="Ex.: Policial, Tribunal, Saúde, Fiscal" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+          <datalist id="template-area-options">
+            ${areas.map(a => `<option value="${a}">`).join('')}
+          </datalist>
+        </div>
+        <div class="mb-4">
+          <label for="template-name" class="block text-sm font-medium text-gray-700 mb-2">Nome do concurso</label>
+          <input type="text" id="template-name" required placeholder="Ex.: PRF, Polícia Penal RN, PF" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="mb-4">
+          <label for="template-org" class="block text-sm font-medium text-gray-700 mb-2">Órgão / banca / observação</label>
+          <input type="text" id="template-org" placeholder="Ex.: CEBRASPE, FGV, IDECAN" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+          <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Criar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function createSyllabusTemplate(event) {
+  event.preventDefault();
+  const profile = getCurrentProfile();
+  if (!profile) return;
+  profile.syllabusTemplates = profile.syllabusTemplates || [];
+  const area = normalizeAreaName(document.getElementById('template-area')?.value || state.currentSyllabusArea || 'Geral');
+  const template = {
+    id: generateId(),
+    area,
+    name: document.getElementById('template-name').value.trim(),
+    organization: document.getElementById('template-org').value.trim(),
+    createdAt: new Date().toISOString(),
+    topics: []
+  };
+  profile.syllabusTemplates.unshift(template);
+  state.profileSyllabusLibraryOpen = true;
+  state.currentSyllabusTemplateId = template.id;
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+function deleteSyllabusTemplate(templateId) {
+  if (!confirm('Excluir este concurso-modelo do banco de editais?')) return;
+  const profile = getCurrentProfile();
+  if (!profile) return;
+  profile.syllabusTemplates = (profile.syllabusTemplates || []).filter(t => t.id !== templateId);
+  if (state.currentSyllabusTemplateId === templateId) state.currentSyllabusTemplateId = null;
+  saveToStorage();
+  render();
+}
+
+function showAddTemplateTopicModal(templateId) {
+  showModal(`
+    <div class="p-6">
+      <h3 class="text-lg font-bold text-navy-900 mb-4">Adicionar Matéria ao Modelo</h3>
+      <form onsubmit="addTemplateTopic(event, '${templateId}')">
+        <div class="mb-4">
+          <label for="template-topic-name" class="block text-sm font-medium text-gray-700 mb-2">Matéria / tópico principal</label>
+          <input type="text" id="template-topic-name" required placeholder="Ex.: Direito Penal, Administração Pública" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="mb-4">
+          <label for="template-topic-parent" class="block text-sm font-medium text-gray-700 mb-2">Disciplina/área maior (opcional)</label>
+          <input type="text" id="template-topic-parent" placeholder="Ex.: Conhecimentos Específicos" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <label for="template-topic-priority" class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+            <select id="template-topic-priority" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              <option value="medium">Média</option>
+              <option value="high">Alta</option>
+              <option value="low">Baixa</option>
+            </select>
+          </div>
+          <div>
+            <label for="template-topic-weight" class="block text-sm font-medium text-gray-700 mb-2">Peso</label>
+            <input type="number" id="template-topic-weight" min="1" max="5" value="3" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+          </div>
+        </div>
+        <div class="mb-5">
+          <label for="template-subtopics" class="block text-sm font-medium text-gray-700 mb-2">Subtópicos / conteúdo do edital</label>
+          <textarea id="template-subtopics" rows="8" placeholder="Digite um subtópico por linha. Ex.:&#10;1.1 Características básicas das organizações formais modernas&#10;1.2 Organização administrativa: centralização e descentralização&#10;1.3 Gestão de contratos" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none"></textarea>
+          <p class="text-xs text-gray-500 mt-1">Cada linha será importada como um subtópico dentro da matéria.</p>
+        </div>
+        <div class="flex gap-3">
+          <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+          <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Salvar matéria</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function addTemplateTopic(event, templateId) {
+  event.preventDefault();
+  const templates = getSyllabusTemplates();
+  const template = templates.find(t => t.id === templateId);
+  if (!template) return;
+  const lines = (document.getElementById('template-subtopics').value || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  const topic = {
+    id: generateId(),
+    name: document.getElementById('template-topic-name').value.trim(),
+    parent: document.getElementById('template-topic-parent').value.trim() || null,
+    priority: document.getElementById('template-topic-priority').value,
+    weight: parseInt(document.getElementById('template-topic-weight').value || '3', 10),
+    subtopics: lines.map(line => ({
+      id: generateId(),
+      name: line.replace(/^\d+(\.\d+)*\s*[-.)]?\s*/, '').trim() || line,
+      priority: 'medium',
+      status: 'pending',
+      questions: 0,
+      accuracy: 0,
+      timeSpent: 0,
+      nextReview: null
+    }))
+  };
+  template.topics = template.topics || [];
+  template.topics.push(topic);
+  saveToStorage();
+  closeModal();
+  render();
+}
+
+function deleteTemplateTopic(templateId, topicId) {
+  if (!confirm('Excluir esta matéria do concurso-modelo?')) return;
+  const template = getSyllabusTemplates().find(t => t.id === templateId);
+  if (!template) return;
+  template.topics = (template.topics || []).filter(t => t.id !== topicId);
+  saveToStorage();
+  render();
+}
+
+
+function showImportSyllabusTemplateModal(templateId) {
+  const profile = getCurrentProfile();
+  const template = (profile?.syllabusTemplates || []).find(t => t.id === templateId);
+  const contests = profile?.contests || [];
+  if (!profile || !template) return;
+
+  const topicSelectionHtml = (template.topics || []).length === 0 ? `
+    <div class="p-4 bg-gray-50 rounded-xl border border-gray-100 text-sm text-gray-500">
+      Este modelo ainda não possui matérias cadastradas.
+    </div>
+  ` : `
+    <div class="mb-2 flex items-center justify-between gap-3">
+      <div>
+        <p class="text-sm font-medium text-navy-900">Seleção opcional do conteúdo</p>
+        <p class="text-xs text-gray-500">Marque matérias inteiras ou apenas subtópicos. Se nada for marcado, o edital inteiro será importado.</p>
+      </div>
+      <button type="button" onclick="toggleAllTemplateImportSelection(true)" class="text-xs text-accent-600 hover:underline font-medium">Marcar tudo</button>
+    </div>
+    <div class="max-h-72 overflow-auto rounded-xl border border-gray-100 divide-y divide-gray-100 bg-white">
+      ${(template.topics || []).map((topic, idx) => `
+        <div class="p-4">
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" class="mt-1 template-import-topic w-4 h-4 rounded border-gray-300 text-accent-600 focus:ring-accent-500" data-topic-id="${topic.id}" onchange="toggleTemplateImportTopic('${topic.id}')">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex w-7 h-7 rounded-lg bg-navy-100 text-navy-700 items-center justify-center text-sm font-bold">${idx + 1}</span>
+                <span class="font-semibold text-navy-900">${topic.name}</span>
+              </div>
+              ${topic.parent ? `<p class="text-xs text-gray-500 mt-1">${topic.parent}</p>` : ''}
+            </div>
+          </label>
+          ${(topic.subtopics || []).length === 0 ? `
+            <p class="text-xs text-gray-400 ml-10 mt-2">Sem subtópicos cadastrados.</p>
+          ` : `
+            <div class="ml-10 mt-3 space-y-2">
+              ${(topic.subtopics || []).map((st, stIdx) => `
+                <label class="flex items-start gap-3 p-2 rounded-lg bg-gray-50 border border-gray-100 cursor-pointer hover:bg-gray-100 transition">
+                  <input type="checkbox" class="mt-1 template-import-subtopic w-4 h-4 rounded border-gray-300 text-accent-600 focus:ring-accent-500" data-topic-id="${topic.id}" data-subtopic-id="${st.id}" onchange="refreshTemplateImportTopicCheck('${topic.id}')">
+                  <span class="text-sm font-semibold text-gray-500 w-10">${idx + 1}.${stIdx + 1}</span>
+                  <span class="text-sm text-navy-700 flex-1">${st.name}</span>
+                </label>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  showModal(`
+    <div class="p-6 max-w-3xl">
+      <h3 class="text-lg font-bold text-navy-900 mb-2">Importar para meu concurso</h3>
+      <p class="text-sm text-gray-500 mb-5">Escolha o concurso de destino e, se quiser, selecione apenas parte do edital "${template.name}".</p>
+      ${contests.length === 0 ? `
+        <div class="p-5 bg-gray-50 rounded-xl border border-gray-100 text-center mb-4">
+          <p class="text-sm text-gray-500">Você ainda não possui concursos ativos. Crie um concurso antes de importar um edital.</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Fechar</button>
+      ` : `
+        <form onsubmit="importSyllabusTemplate(event, '${templateId}')">
+          <div class="mb-5">
+            <label for="target-contest-id" class="block text-sm font-medium text-gray-700 mb-2">Concurso de destino</label>
+            <select id="target-contest-id" required class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+              ${contests.map(c => `<option value="${c.id}">${getContestArea(c)} • ${c.name} ${c.organization ? '• ' + c.organization : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="mb-5">
+            ${topicSelectionHtml}
+          </div>
+          <div class="flex gap-3">
+            <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+            <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Importar</button>
+          </div>
+        </form>
+      `}
+    </div>
+  `);
+}
+
+function toggleTemplateImportTopic(topicId) {
+  const topicCheckbox = document.querySelector(`.template-import-topic[data-topic-id="${topicId}"]`);
+  const subCheckboxes = Array.from(document.querySelectorAll(`.template-import-subtopic[data-topic-id="${topicId}"]`));
+  subCheckboxes.forEach(cb => { cb.checked = !!topicCheckbox?.checked; });
+}
+
+function refreshTemplateImportTopicCheck(topicId) {
+  const topicCheckbox = document.querySelector(`.template-import-topic[data-topic-id="${topicId}"]`);
+  const subCheckboxes = Array.from(document.querySelectorAll(`.template-import-subtopic[data-topic-id="${topicId}"]`));
+  if (!topicCheckbox || subCheckboxes.length === 0) return;
+  const checkedCount = subCheckboxes.filter(cb => cb.checked).length;
+  topicCheckbox.checked = checkedCount === subCheckboxes.length;
+  topicCheckbox.indeterminate = checkedCount > 0 && checkedCount < subCheckboxes.length;
+}
+
+function toggleAllTemplateImportSelection(checked) {
+  document.querySelectorAll('.template-import-topic, .template-import-subtopic').forEach(cb => {
+    cb.checked = checked;
+    cb.indeterminate = false;
+  });
+}
+
+function getSelectedTemplateImportTopics(template) {
+  const topicCheckboxes = Array.from(document.querySelectorAll('.template-import-topic'));
+  const subCheckboxes = Array.from(document.querySelectorAll('.template-import-subtopic'));
+  const anySelected = topicCheckboxes.some(cb => cb.checked) || subCheckboxes.some(cb => cb.checked);
+  if (!anySelected) return template.topics || [];
+
+  return (template.topics || []).map(topic => {
+    const topicChecked = topicCheckboxes.some(cb => cb.dataset.topicId === topic.id && cb.checked);
+    const checkedSubIds = subCheckboxes
+      .filter(cb => cb.dataset.topicId === topic.id && cb.checked)
+      .map(cb => cb.dataset.subtopicId);
+
+    if (topicChecked) return { ...topic, subtopics: topic.subtopics || [] };
+    if (checkedSubIds.length > 0) {
+      return {
+        ...topic,
+        subtopics: (topic.subtopics || []).filter(st => checkedSubIds.includes(st.id))
+      };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function importSyllabusTemplate(eventOrTemplateId, maybeTemplateId = null) {
+  if (eventOrTemplateId && typeof eventOrTemplateId.preventDefault === 'function') eventOrTemplateId.preventDefault();
+  const templateId = maybeTemplateId || eventOrTemplateId;
+  const profile = getCurrentProfile();
+  const targetContestId = document.getElementById('target-contest-id')?.value || state.currentContest;
+  const contest = profile?.contests?.find(c => c.id === targetContestId);
+  const template = (profile?.syllabusTemplates || []).find(t => t.id === templateId);
+  if (!contest || !template) return;
+  contest.area = contest.area || getTemplateArea(template);
+
+  const selectedTopics = getSelectedTemplateImportTopics(template);
+  const fullImport = selectedTopics.length === (template.topics || []).length && selectedTopics.every(t => {
+    const original = (template.topics || []).find(orig => orig.id === t.id);
+    return (t.subtopics || []).length === (original?.subtopics || []).length;
+  });
+  const confirmMessage = fullImport
+    ? `Importar todo o edital de "${template.name}" para o concurso "${contest.name}"?`
+    : `Importar ${selectedTopics.length} matéria(s) selecionada(s) do edital "${template.name}" para o concurso "${contest.name}"?`;
+  if (!confirm(confirmMessage)) return;
+
+  contest.syllabus = contest.syllabus || [];
+  selectedTopics.forEach(t => {
+    const newTopicId = generateId();
+    contest.syllabus.push({
+      id: newTopicId,
+      name: t.name,
+      parent: t.parent || null,
+      priority: t.priority || 'medium',
+      weight: t.weight || 3,
+      status: 'pending',
+      questions: 0,
+      accuracy: 0,
+      timeSpent: 0,
+      nextReview: null,
+      subtopics: (t.subtopics || []).map(st => ({
+        id: generateId(),
+        name: st.name,
+        priority: st.priority || 'medium',
+        status: 'pending',
+        questions: 0,
+        accuracy: 0,
+        timeSpent: 0,
+        nextReview: null
+      }))
+    });
+  });
+  saveToStorage();
+  alert(fullImport ? 'Edital importado com sucesso para o concurso selecionado.' : 'Conteúdo selecionado importado com sucesso para o concurso selecionado.');
+  closeModal();
+  render();
+}
+
+function showAddTopicModal() {
       const profile = state.profiles.find(p => p.id === state.currentProfile);
       const contest = profile?.contests?.find(c => c.id === state.currentContest);
       const syllabus = contest?.syllabus || [];
@@ -1980,7 +3536,8 @@ function renderSessions(contest) {
         name,
         createdAt: new Date().toISOString(),
         contests: [],
-        archivedContests: []
+        archivedContests: [],
+        appearance: { mode: 'light', accent: 'blue' }
       };
       
       state.profiles.push(profile);
@@ -2033,6 +3590,7 @@ function renderSessions(contest) {
 
     function createContest(event) {
       event.preventDefault();
+      const area = normalizeAreaName(document.getElementById('contest-area')?.value || 'Geral');
       const name = document.getElementById('contest-name').value.trim();
       const organization = document.getElementById('contest-org').value.trim();
       if (!name) return;
@@ -2042,6 +3600,7 @@ function renderSessions(contest) {
       
       const contest = {
         id: generateId(),
+        area,
         name,
         organization,
         createdAt: new Date().toISOString(),
@@ -2054,13 +3613,68 @@ function renderSessions(contest) {
         files: [],
         trash: [],
         plan: { mode: 'pre', weeklyGoal: 20, questionGoal: 100 },
-        reviewSettings: { intervals: [1, 7, 30] }
+        reviewSettings: { intervals: [1, 7, 30] },
+        reportView: { mode: 'pre', weekOffset: 0 },
+        ui: { sidebarCollapsed: false }
       };
       
       profile.contests = profile.contests || [];
       profile.contests.push(contest);
       saveToStorage();
       closeModal();
+      render();
+    }
+
+
+    
+function showAppearanceModal() {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return;
+      const appearance = profile.appearance || { accent: 'blue' };
+      showModal(`
+        <div class="p-6">
+          <h3 class="text-lg font-bold text-navy-900 mb-4">Personalização</h3>
+          <form onsubmit="saveAppearanceSettings(event)">
+            <div class="mb-5">
+              <label class="block text-sm font-medium text-gray-700 mb-2">Cor principal</label>
+              <select id="appearance-accent" class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-accent-500 focus:border-accent-500 outline-none">
+                <option value="blue" ${appearance.accent === 'blue' ? 'selected' : ''}>Azul padrão</option>
+                <option value="indigo" ${appearance.accent === 'indigo' ? 'selected' : ''}>Índigo</option>
+                <option value="green" ${appearance.accent === 'green' ? 'selected' : ''}>Verde</option>
+                <option value="red" ${appearance.accent === 'red' ? 'selected' : ''}>Vermelho</option>
+              </select>
+            </div>
+            <div class="flex gap-3">
+              <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+              <button type="submit" class="flex-1 px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">Salvar</button>
+            </div>
+          </form>
+        </div>
+      `);
+    }
+
+
+    
+function saveAppearanceSettings(event) {
+      event.preventDefault();
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile) return;
+      const accentEl = document.getElementById('appearance-accent');
+      profile.appearance = {
+        accent: accentEl ? accentEl.value : 'blue'
+      };
+      saveToStorage();
+      closeModal();
+      render();
+    }
+
+
+    function toggleSidebar() {
+      const contest = getCurrentContest();
+      if (!contest) return;
+      contest.ui = contest.ui || {};
+      contest.ui.sidebarCollapsed = !contest.ui.sidebarCollapsed;
+      saveToStorage();
       render();
     }
 
@@ -2093,6 +3707,18 @@ function renderSessions(contest) {
       
       const contest = profile.archivedContests.splice(contestIndex, 1)[0];
       profile.contests.push(contest);
+      saveToStorage();
+      render();
+    }
+
+    function deleteArchivedContest(id) {
+      const profile = state.profiles.find(p => p.id === state.currentProfile);
+      if (!profile || !Array.isArray(profile.archivedContests)) return;
+      const contest = profile.archivedContests.find(c => c.id === id);
+      if (!contest) return;
+      const ok = confirm(`Excluir definitivamente o concurso arquivado "${contest.name}"? Esta ação não pode ser desfeita.`);
+      if (!ok) return;
+      profile.archivedContests = profile.archivedContests.filter(c => c.id !== id);
       saveToStorage();
       render();
     }
@@ -2233,7 +3859,8 @@ function renderSessions(contest) {
         source: document.getElementById('questions-source').value.trim(),
         total: parseInt(document.getElementById('questions-total').value) || 0,
         correct: parseInt(document.getElementById('questions-correct').value) || 0,
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        planMode: getActiveContestMode(contest)
       };
 
       contest.questions = contest.questions || [];
@@ -2317,17 +3944,11 @@ function renderSessions(contest) {
       render();
     }
 
-    function setPlanMode(mode) {
-      const profile = state.profiles.find(p => p.id === state.currentProfile);
-      const contest = profile?.contests?.find(c => c.id === state.currentContest);
-      if (!contest) return;
-      
-      contest.plan = contest.plan || {};
-      contest.plan.mode = mode;
-      
-      saveToStorage();
-      render();
+    
+function setPlanMode(mode) {
+      setActiveContestMode(mode);
     }
+
 
     function updatePlanGoal(key, value) {
       const profile = state.profiles.find(p => p.id === state.currentProfile);
@@ -2401,7 +4022,8 @@ function renderSessions(contest) {
         subtopicName: subtopic?.name || null,
         type: typeSelect?.value || 'theory',
         duration: elapsed,
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        planMode: getActiveContestMode(contest)
       };
 
       contest.sessions = contest.sessions || [];
@@ -2636,7 +4258,7 @@ function addScheduleItem(dayIndex) {
     pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
     post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
   };
-  const mode = contest.plan.mode || 'pre';
+  const mode = getActiveContestMode(contest);
   const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
 
   showModal(`
@@ -2699,7 +4321,7 @@ function saveScheduleItem(event, dayIndex) {
     pre: {0:[],1:[],2:[],3:[],4:[],5:[],6:[]},
     post:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]}
   };
-  const mode = contest.plan.mode || 'pre';
+  const mode = getActiveContestMode(contest);
   const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
 
   const topicId = document.getElementById('schedule-topic').value || null;
@@ -2728,7 +4350,7 @@ function saveScheduleItem(event, dayIndex) {
 function deleteScheduleItem(dayIndex, itemId) {
   const contest = getCurrentContest();
   if (!contest?.plan?.schedules) return;
-  const mode = contest.plan.mode || 'pre';
+  const mode = getActiveContestMode(contest);
   const schedule = contest.plan.schedules[mode] || (contest.plan.schedules[mode] = {0:[],1:[],2:[],3:[],4:[],5:[],6:[]});
   schedule[dayIndex] = (schedule[dayIndex] || []).filter(i => i.id !== itemId);
   saveToStorage();
@@ -2804,6 +4426,143 @@ function onQuestionsTopicChange(topicId) {
       };
       
       downloadJSON(data, `concurso-${contest.name.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.json`);
+    }
+
+
+    function normalizeImportedSyllabusTemplates(rawTemplates, existingTemplates = []) {
+      const existingIds = new Set((existingTemplates || []).map(t => t.id));
+      const usedIds = new Set(existingIds);
+
+      function ensureId(oldId) {
+        if (!oldId || usedIds.has(oldId)) {
+          const newId = generateId();
+          usedIds.add(newId);
+          return newId;
+        }
+        usedIds.add(oldId);
+        return oldId;
+      }
+
+      return (rawTemplates || []).map(template => {
+        const newTemplate = {
+          ...template,
+          id: ensureId(template.id),
+          area: normalizeAreaName(template.area || template.careerArea || template.category),
+          name: template.name || 'Concurso-modelo importado',
+          organization: template.organization || '',
+          importedAt: new Date().toISOString(),
+          topics: (template.topics || []).map(topic => ({
+            ...topic,
+            id: ensureId(topic.id),
+            name: topic.name || 'Matéria importada',
+            parent: topic.parent || null,
+            priority: topic.priority || 'medium',
+            weight: topic.weight || 3,
+            subtopics: (topic.subtopics || []).map(subtopic => ({
+              ...subtopic,
+              id: ensureId(subtopic.id),
+              name: subtopic.name || 'Subtópico importado',
+              priority: subtopic.priority || 'medium',
+              status: subtopic.status || 'pending',
+              questions: subtopic.questions || 0,
+              accuracy: subtopic.accuracy || 0,
+              timeSpent: subtopic.timeSpent || 0,
+              nextReview: subtopic.nextReview || null
+            }))
+          }))
+        };
+        return newTemplate;
+      });
+    }
+
+    function exportSyllabusTemplates() {
+      const profile = getCurrentProfile();
+      if (!profile) {
+        alert('Selecione um perfil antes de exportar o Banco de Editais.');
+        return;
+      }
+
+      const templates = profile.syllabusTemplates || [];
+      const data = {
+        version: '1.0',
+        type: 'syllabusTemplates',
+        exportedAt: new Date().toISOString(),
+        profileName: profile.name,
+        templates
+      };
+
+      const safeName = (profile.name || 'perfil').toLowerCase().replace(/\s+/g, '-');
+      downloadJSON(data, `banco-editais-${safeName}-${new Date().toISOString().split('T')[0]}.json`);
+    }
+
+    function importSyllabusTemplates() {
+      const profile = getCurrentProfile();
+      if (!profile) {
+        alert('Selecione um perfil antes de importar o Banco de Editais.');
+        return;
+      }
+
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = JSON.parse(event.target.result);
+            const rawTemplates = Array.isArray(data)
+              ? data
+              : (data.templates || data.syllabusTemplates || data.bancoEditais || []);
+
+            if (!Array.isArray(rawTemplates) || rawTemplates.length === 0) {
+              throw new Error('Arquivo sem modelos de edital.');
+            }
+
+            profile.syllabusTemplates = profile.syllabusTemplates || [];
+            const replace = confirm('Deseja SUBSTITUIR o Banco de Editais atual?\n\nOK = substituir tudo\nCancelar = mesclar com o banco atual');
+
+            if (replace) {
+              profile.syllabusTemplates = normalizeImportedSyllabusTemplates(rawTemplates, []);
+            } else {
+              const imported = normalizeImportedSyllabusTemplates(rawTemplates, profile.syllabusTemplates);
+              profile.syllabusTemplates = [...imported, ...profile.syllabusTemplates];
+            }
+
+            state.profileSyllabusLibraryOpen = true;
+            state.currentSyllabusArea = null;
+            state.currentSyllabusTemplateId = null;
+            saveToStorage();
+            render();
+
+            showModal(`
+              <div class="p-6 text-center">
+                <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
+                  ${icons.check}
+                </div>
+                <h3 class="text-lg font-bold text-navy-900 mb-2">Banco de Editais Importado!</h3>
+                <p class="text-gray-600 mb-4">${rawTemplates.length} modelo(s) foram importados com sucesso.</p>
+                <button onclick="closeModal()" class="px-6 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 transition font-medium">OK</button>
+              </div>
+            `);
+          } catch (error) {
+            showModal(`
+              <div class="p-6 text-center">
+                <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600">
+                  ${icons.x}
+                </div>
+                <h3 class="text-lg font-bold text-navy-900 mb-2">Erro ao Importar Banco</h3>
+                <p class="text-gray-600 mb-4">O arquivo não contém um Banco de Editais válido.</p>
+                <button onclick="closeModal()" class="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium">Fechar</button>
+              </div>
+            `);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
     }
 
     function downloadJSON(data, filename) {
@@ -2905,6 +4664,7 @@ function onQuestionsTopicChange(topicId) {
           const currentTab = contest?.currentTab || 'dashboard';
           if (currentTab === 'sessions') {
             applySessionPrefillIfAny();
+            updateManualSessionSubtopicOptions();
           }
         }
       } catch (e) {
